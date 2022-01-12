@@ -793,7 +793,11 @@ QuicConnUpdateRtt(
     if (RttUpdated) {
         CXPLAT_DBG_ASSERT(Path->SmoothedRtt != 0);
         QuicTraceLogConnVerbose(
+  <<<<<<< user/chgray/clog_prep_correct_manifest_macro_collisions
             RttUpdatedEvt,
+  =======
+            RttUpdatedMsg,
+  >>>>>>> master
             Connection,
             "Updated Rtt=%u.%03u ms, Var=%u.%03u",
             Path->SmoothedRtt / 1000, Path->SmoothedRtt % 1000,
@@ -6445,6 +6449,7 @@ QuicConnApplyNewSettings(
             &Connection->Settings,
             OverWrite,
             CopyExternalToInternal,
+            !Connection->State.Started,
             NewSettingsSize,
             NewSettings)) {
         return FALSE;
@@ -6454,6 +6459,7 @@ QuicConnApplyNewSettings(
 
         Connection->Paths[0].SmoothedRtt = MS_TO_US(Connection->Settings.InitialRttMs);
         Connection->Paths[0].RttVariance = Connection->Paths[0].SmoothedRtt / 2;
+        Connection->Paths[0].Mtu = Connection->Settings.MinimumMtu;
 
         if (Connection->Settings.ServerResumptionLevel > QUIC_SERVER_NO_RESUME &&
             Connection->HandshakeTP == NULL) {

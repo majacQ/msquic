@@ -2090,7 +2090,11 @@ CxPlatDataPathSocketReceive(
         if (IsUnreachableError) {
 #if QUIC_CLOG
             QuicTraceLogVerbose(
+  <<<<<<< user/chgray/clog_prep_correct_manifest_macro_collisions
+                DatapathUnreachableEvt,
+  =======
                 DatapathUnreachableMsg,
+ >>>>>>> master
                 "[sock][%p] Unreachable error from %!ADDR!",
                 Binding,
                 CASTED_CLOG_BYTEARRAY(sizeof(RemoteAddr), &RemoteAddr));

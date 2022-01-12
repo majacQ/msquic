@@ -1054,34 +1054,6 @@
       ],
       "macroName": "QuicTraceLogConnInfo"
     },
-    "RttUpdated": {
-      "ModuleProperites": {},
-      "TraceString": "[conn][%p] Updated Rtt=%u.%03u ms, Var=%u.%03u",
-      "UniqueId": "RttUpdated",
-      "splitArgs": [
-        {
-          "DefinationEncoding": "p",
-          "MacroVariableName": "arg1"
-        },
-        {
-          "DefinationEncoding": "u",
-          "MacroVariableName": "arg3"
-        },
-        {
-          "DefinationEncoding": "03u",
-          "MacroVariableName": "arg4"
-        },
-        {
-          "DefinationEncoding": "u",
-          "MacroVariableName": "arg5"
-        },
-        {
-          "DefinationEncoding": "03u",
-          "MacroVariableName": "arg6"
-        }
-      ],
-      "macroName": "QuicTraceLogConnVerbose"
-    },
     "NewSrcCidNameCollision": {
       "ModuleProperites": {},
       "TraceString": "[conn][%p] CID collision, trying again",
@@ -10382,6 +10354,8 @@
       ],
       "macroName": "QuicTraceLogInfo"
     },
+  <<<<<<< user/chgray/clog_prep_correct_manifest_macro_collisions
+  =======
     "RttUpdatedMsg": {
       "ModuleProperites": {},
       "TraceString": "[conn][%p] Updated Rtt=%u.%03u ms, Var=%u.%03u",
@@ -10410,6 +10384,7 @@
       ],
       "macroName": "QuicTraceLogConnVerbose"
     },
+  >>>>>>> master
     "RemoveSendFlagsMsg": {
       "ModuleProperites": {},
       "TraceString": "[conn][%p] Removing flags %x",
@@ -10426,10 +10401,17 @@
       ],
       "macroName": "QuicTraceLogConnVerbose"
     },
+  <<<<<<< user/chgray/clog_prep_correct_manifest_macro_collisions
+    "AckRangeEvt": {
+      "ModuleProperites": {},
+      "TraceString": "[strm][%p] Received ack for %d bytes, offset=%llu, FF=0x%hx",
+      "UniqueId": "AckRangeEvt",
+  =======
     "AckRangeMsg": {
       "ModuleProperites": {},
       "TraceString": "[strm][%p] Received ack for %d bytes, offset=%llu, FF=0x%hx",
       "UniqueId": "AckRangeMsg",
+  >>>>>>> master
       "splitArgs": [
         {
           "DefinationEncoding": "p",
@@ -10478,10 +10460,17 @@
       ],
       "macroName": "QuicTraceLogVerbose"
     },
+  <<<<<<< user/chgray/clog_prep_correct_manifest_macro_collisions
+    "DatapathUnreachableEvt": {
+      "ModuleProperites": {},
+      "TraceString": "[sock][%p] Unreachable error from %!ADDR!",
+      "UniqueId": "DatapathUnreachableEvt",
+  =======
     "DatapathUnreachableMsg": {
       "ModuleProperites": {},
       "TraceString": "[sock][%p] Unreachable error from %!ADDR!",
       "UniqueId": "DatapathUnreachableMsg",
+  >>>>>>> master
       "splitArgs": [
         {
           "DefinationEncoding": "p",
@@ -10493,6 +10482,37 @@
         }
       ],
       "macroName": "QuicTraceLogVerbose"
+  <<<<<<< user/chgray/clog_prep_correct_manifest_macro_collisions
+    },
+    "RttUpdatedEvt": {
+      "ModuleProperites": {},
+      "TraceString": "[conn][%p] Updated Rtt=%u.%03u ms, Var=%u.%03u",
+      "UniqueId": "RttUpdatedEvt",
+      "splitArgs": [
+        {
+          "DefinationEncoding": "p",
+          "MacroVariableName": "arg1"
+        },
+        {
+          "DefinationEncoding": "u",
+          "MacroVariableName": "arg3"
+        },
+        {
+          "DefinationEncoding": "03u",
+          "MacroVariableName": "arg4"
+        },
+        {
+          "DefinationEncoding": "u",
+          "MacroVariableName": "arg5"
+        },
+        {
+          "DefinationEncoding": "03u",
+          "MacroVariableName": "arg6"
+        }
+      ],
+      "macroName": "QuicTraceLogConnVerbose"
+  =======
+  >>>>>>> master
     }
   },
   "Version": 1,
@@ -13556,16 +13576,24 @@
         "TraceID": "InteropTestStop"
       },
       {
+  <<<<<<< user/chgray/clog_prep_correct_manifest_macro_collisions
+  =======
         "UniquenessHash": "dc25a415-b386-47ec-0128-415c6f31795b",
         "TraceID": "RttUpdatedMsg"
       },
       {
+  >>>>>>> master
         "UniquenessHash": "b4aa5fad-d1de-466c-0214-1bbda4b9eb95",
         "TraceID": "RemoveSendFlagsMsg"
       },
       {
+  <<<<<<< user/chgray/clog_prep_correct_manifest_macro_collisions
+        "UniquenessHash": "4f56268f-806a-e01d-e193-5a5dde61da1c",
+        "TraceID": "AckRangeEvt"
+  =======
         "UniquenessHash": "1f842f1b-027f-b5ec-e0ac-fc9491aeb629",
         "TraceID": "AckRangeMsg"
+  >>>>>>> master
       },
       {
         "UniquenessHash": "28f77853-916b-5ceb-e928-405aff056b0a",
@@ -13576,8 +13604,17 @@
         "TraceID": "TestReadIoctl"
       },
       {
+  <<<<<<< user/chgray/clog_prep_correct_manifest_macro_collisions
+        "UniquenessHash": "5b79867a-669e-8ee4-dc4a-ef9145badecd",
+        "TraceID": "DatapathUnreachableEvt"
+      },
+      {
+        "UniquenessHash": "97928da3-4e6d-dbb1-7b6d-339a81700681",
+        "TraceID": "RttUpdatedEvt"
+  =======
         "UniquenessHash": "29acd049-f710-a71e-1271-698510cfc519",
         "TraceID": "DatapathUnreachableMsg"
+  >>>>>>> master
       }
     ]
   }

@@ -793,7 +793,11 @@ QuicConnUpdateRtt(
     if (RttUpdated) {
         CXPLAT_DBG_ASSERT(Path->SmoothedRtt != 0);
         QuicTraceLogConnVerbose(
+  <<<<<<< user/chgray/clog_prep_correct_manifest_macro_collisions
+            RttUpdatedEvt,
+  =======
             RttUpdatedMsg,
+  >>>>>>> master
             Connection,
             "Updated Rtt=%u.%03u ms, Var=%u.%03u",
             Path->SmoothedRtt / 1000, Path->SmoothedRtt % 1000,

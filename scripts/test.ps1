@@ -61,6 +61,9 @@ This script provides helpers for running executing the MsQuic tests.
 .Parameter AZP
     Runs in Azure Pipelines mode.
 
+.Parameter ErrorsAsWarnings
+    Treats all errors as warnings.
+
 .EXAMPLE
     test.ps1
 
@@ -88,7 +91,7 @@ param (
 
     [Parameter(Mandatory = $false)]
     [ValidateSet("x86", "x64", "arm", "arm64")]
-    [string]$Arch = "x64",
+    [string]$Arch = "",
 
     [Parameter(Mandatory = $false)]
     [ValidateSet("schannel", "openssl")]
@@ -136,6 +139,9 @@ param (
     [switch]$EnableAppVerifier = $false,
 
     [Parameter(Mandatory = $false)]
+    [switch]$EnableTcpipVerifier = $false,
+
+    [Parameter(Mandatory = $false)]
     [switch]$CodeCoverage = $false,
 
     [Parameter(Mandatory = $false)]
@@ -145,7 +151,10 @@ param (
     [switch]$AZP = $false,
 
     [Parameter(Mandatory = $false)]
-    [switch]$SkipUnitTests = $false
+    [switch]$SkipUnitTests = $false,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$ErrorsAsWarnings = $false
 )
 
 Set-StrictMode -Version 'Latest'
@@ -182,24 +191,11 @@ if ($CodeCoverage) {
     }
 }
 
-# Default TLS based on current platform.
-if ("" -eq $Tls) {
-    if ($IsWindows) {
-        $Tls = "schannel"
-    } else {
-        $Tls = "openssl"
-    }
-}
+$BuildConfig = & (Join-Path $PSScriptRoot get-buildconfig.ps1) -Tls $Tls -Arch $Arch -ExtraArtifactDir $ExtraArtifactDir -Config $Config
 
-if ($IsWindows) {
-    $Platform = "windows"
-} elseif ($IsLinux) {
-    $Platform = "linux"
-} elseif ($IsMacOS) {
-    $Platform = "macos"
-} else {
-    Write-Error "Unsupported platform type!"
-}
+$Tls = $BuildConfig.Tls
+$Arch = $BuildConfig.Arch
+$RootArtifactDir = $BuildConfig.ArtifactsDir
 
 # Root directory of the project.
 $RootDir = Split-Path $PSScriptRoot -Parent
@@ -217,13 +213,8 @@ if ($CodeCoverage) {
 # Path to the run-gtest Powershell script.
 $RunTest = Join-Path $RootDir "scripts/run-gtest.ps1"
 
-if ("" -eq $ExtraArtifactDir) {
-    $RootArtifactDir = Join-Path $RootDir "artifacts" "bin" $Platform "$($Arch)_$($Config)_$($Tls)"
-} else {
-    if ($Kernel) {
-        Write-Error "Kernel not supported with extra artifact dir"
-    }
-    $RootArtifactDir = Join-Path $RootDir "artifacts" "bin" $Platform "$($Arch)_$($Config)_$($Tls)_$($ExtraArtifactDir)"
+if ("" -ne $ExtraArtifactDir -and $Kernel) {
+    Write-Error "Kernel not supported with extra artifact dir"
 }
 
 # Path to the msquictest exectuable.
@@ -301,11 +292,17 @@ if ($NoProgress) {
 if ($EnableAppVerifier) {
     $TestArguments += " -EnableAppVerifier"
 }
+if ($EnableTcpipVerifier) {
+    $TestArguments += " -EnableTcpipVerifier"
+}
 if ($CodeCoverage) {
     $TestArguments += " -CodeCoverage"
 }
 if ($AZP) {
     $TestArguments += " -AZP"
+}
+if ($ErrorsAsWarnings) {
+    $TestArguments += " -ErrorsAsWarnings"
 }
 
 # Run the script.

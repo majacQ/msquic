@@ -9,6 +9,10 @@ Abstract:
 
 --*/
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
 #define QUIC_TP_FLAG_INITIAL_MAX_DATA                       0x00000001
 #define QUIC_TP_FLAG_INITIAL_MAX_STRM_DATA_BIDI_LOCAL       0x00000002
 #define QUIC_TP_FLAG_INITIAL_MAX_STRM_DATA_BIDI_REMOTE      0x00000004
@@ -180,10 +184,10 @@ typedef struct QUIC_TRANSPORT_PARAMETERS {
     uint8_t RetrySourceConnectionIDLength;
 
     //
-    // Pointer to the Version Negotiation transport parameter opaque blob.
+    // The version_information transport parameter opaque blob.
     //
-    const uint8_t* VersionNegotiationInfo;
-    QUIC_VAR_INT VersionNegotiationInfoLength;
+    uint32_t VersionInfoLength;
+    const uint8_t* VersionInfo;
 
 } QUIC_TRANSPORT_PARAMETERS;
 
@@ -234,3 +238,7 @@ void
 QuicCryptoTlsCleanupTransportParameters(
     _In_ QUIC_TRANSPORT_PARAMETERS* TransportParams
     );
+
+#if defined(__cplusplus)
+}
+#endif

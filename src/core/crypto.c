@@ -300,12 +300,10 @@ QuicCryptoInitializeTls(
     TlsConfig.Connection = Connection;
     TlsConfig.ResumptionTicketBuffer = Crypto->ResumptionTicket;
     TlsConfig.ResumptionTicketLength = Crypto->ResumptionTicketLength;
-    if (!QuicConnIsServer(Connection)) {
+    if (QuicConnIsClient(Connection)) {
         TlsConfig.ServerName = Connection->RemoteServerName;
     }
-#ifdef CXPLAT_TLS_SECRETS_SUPPORT
     TlsConfig.TlsSecrets = Connection->TlsSecrets;
-#endif
 
     TlsConfig.TPType =
         Connection->Stats.QuicVersion != QUIC_VERSION_DRAFT_29 ?
@@ -356,7 +354,7 @@ QuicCryptoReset(
     _In_ QUIC_CRYPTO* Crypto
     )
 {
-    CXPLAT_DBG_ASSERT(!QuicConnIsServer(QuicCryptoGetConnection(Crypto)));
+    CXPLAT_DBG_ASSERT(QuicConnIsClient(QuicCryptoGetConnection(Crypto)));
     CXPLAT_TEL_ASSERT(Crypto->RecvTotalConsumed == 0);
 
     Crypto->MaxSentLength = 0;
@@ -865,29 +863,38 @@ QuicCryptoWriteFrames(
     CXPLAT_DBG_ASSERT(Builder->Metadata->FrameCount < QUIC_MAX_FRAMES_PER_PACKET);
 
     QUIC_CONNECTION* Connection = QuicCryptoGetConnection(Crypto);
+
+    if (!QuicCryptoHasPendingCryptoFrame(Crypto)) {
+        //
+        // Likely an ACK after retransmission got us into this state. Just
+        // remove the send flag and continue on.
+        //
+        Connection->Send.SendFlags &= ~QUIC_CONN_SEND_FLAG_CRYPTO;
+        return TRUE;
+    }
+
+    if (Builder->PacketType !=
+        QuicEncryptLevelToPacketType(QuicCryptoGetNextEncryptLevel(Crypto))) {
+        //
+        // Nothing to send in this packet / encryption level, just continue on.
+        //
+        return TRUE;
+    }
+
     uint8_t PrevFrameCount = Builder->Metadata->FrameCount;
 
     uint16_t AvailableBufferLength =
         (uint16_t)Builder->Datagram->Length - Builder->EncryptionOverhead;
 
-    if (QuicCryptoHasPendingCryptoFrame(Crypto)) {
-        QuicCryptoWriteCryptoFrames(
-            Crypto,
-            Builder,
-            &Builder->DatagramLength,
-            AvailableBufferLength,
-            Builder->Datagram->Buffer);
+    QuicCryptoWriteCryptoFrames(
+        Crypto,
+        Builder,
+        &Builder->DatagramLength,
+        AvailableBufferLength,
+        Builder->Datagram->Buffer);
 
-        if (!QuicCryptoHasPendingCryptoFrame(Crypto)) {
-            Connection->Send.SendFlags &= ~QUIC_CONN_SEND_FLAG_CRYPTO;
-        }
-
-    } else {
-        //
-        // If it doesn't have anything to send, it shouldn't have been queued in
-        // the first place.
-        //
-        CXPLAT_DBG_ASSERT(FALSE);
+    if (!QuicCryptoHasPendingCryptoFrame(Crypto)) {
+        Connection->Send.SendFlags &= ~QUIC_CONN_SEND_FLAG_CRYPTO;
     }
 
     return Builder->Metadata->FrameCount > PrevFrameCount;
@@ -1098,10 +1105,8 @@ QuicCryptoOnAck(
                 Length,
                 &SacksUpdated);
         if (Sack == NULL) {
-
             QuicConnFatalError(Connection, QUIC_STATUS_OUT_OF_MEMORY, "Out of memory");
             return;
-
         }
 
         if (SacksUpdated) {
@@ -1268,7 +1273,7 @@ QuicConnReceiveTP(
     _In_reads_(TPLength) const uint8_t* TPBuffer
     )
 {
-    CXPLAT_DBG_ASSERT(!QuicConnIsServer(Connection));
+    CXPLAT_DBG_ASSERT(QuicConnIsClient(Connection));
 
     if (!QuicCryptoTlsDecodeTransportParameters(
             Connection,
@@ -1321,7 +1326,7 @@ QuicCryptoProcessTlsCompletion(
             Connection,
             "0-RTT rejected");
         CXPLAT_TEL_ASSERT(Crypto->TlsState.EarlyDataState != CXPLAT_TLS_EARLY_DATA_ACCEPTED);
-        if (!QuicConnIsServer(Connection)) {
+        if (QuicConnIsClient(Connection)) {
             QuicCryptoDiscardKeys(Crypto, QUIC_PACKET_KEY_0_RTT);
             QuicLossDetectionOnZeroRttRejected(&Connection->LossDetection);
         } else {
@@ -1339,7 +1344,7 @@ QuicCryptoProcessTlsCompletion(
         _Analysis_assume_(Crypto->TlsState.WriteKey >= 0);
         CXPLAT_TEL_ASSERT(Crypto->TlsState.WriteKeys[Crypto->TlsState.WriteKey] != NULL);
         if (Crypto->TlsState.WriteKey == QUIC_PACKET_KEY_HANDSHAKE &&
-            !QuicConnIsServer(Connection)) {
+            QuicConnIsClient(Connection)) {
             //
             // Per spec, client MUST discard Initial keys when it starts
             // encrypting packets with handshake keys.
@@ -1347,7 +1352,7 @@ QuicCryptoProcessTlsCompletion(
             QuicCryptoDiscardKeys(Crypto, QUIC_PACKET_KEY_INITIAL);
         }
         if (Crypto->TlsState.WriteKey == QUIC_PACKET_KEY_1_RTT) {
-            if (!QuicConnIsServer(Connection)) {
+            if (QuicConnIsClient(Connection)) {
                 //
                 // The client has the 1-RTT keys so we can get rid of 0-RTT
                 // keys.
@@ -1456,13 +1461,12 @@ QuicCryptoProcessTlsCompletion(
     }
 
     if (Crypto->ResultFlags & CXPLAT_TLS_RESULT_DATA) {
-#ifdef CXPLAT_TLS_SECRETS_SUPPORT
         //
         // Parse the client initial to populate the TlsSecrets with the
         // ClientRandom
         //
         if (Connection->TlsSecrets != NULL &&
-            !QuicConnIsServer(Connection) &&
+            QuicConnIsClient(Connection) &&
             Crypto->TlsState.WriteKey == QUIC_PACKET_KEY_INITIAL &&
             Crypto->TlsState.BufferLength > 0) {
             QUIC_NEW_CONNECTION_INFO Info = { 0 };
@@ -1477,7 +1481,6 @@ QuicCryptoProcessTlsCompletion(
             //
             Connection->TlsSecrets = NULL;
         }
-#endif
         QuicSendSetSendFlag(
             &QuicCryptoGetConnection(Crypto)->Send,
             QUIC_CONN_SEND_FLAG_CRYPTO);
@@ -1510,6 +1513,30 @@ QuicCryptoProcessTlsCompletion(
                 "Handshake confirmed (server)");
             QuicSendSetSendFlag(&Connection->Send, QUIC_CONN_SEND_FLAG_HANDSHAKE_DONE);
             QuicCryptoHandshakeConfirmed(&Connection->Crypto);
+
+            //
+            // Take this opportinuty to clean up the client chosen initial CID.
+            // It will be the second one in the list.
+            //
+            CXPLAT_DBG_ASSERT(Connection->SourceCids.Next != NULL);
+            CXPLAT_DBG_ASSERT(Connection->SourceCids.Next->Next != NULL);
+            CXPLAT_DBG_ASSERT(Connection->SourceCids.Next->Next != NULL);
+            CXPLAT_DBG_ASSERT(Connection->SourceCids.Next->Next->Next == NULL);
+            QUIC_CID_HASH_ENTRY* InitialSourceCid =
+                CXPLAT_CONTAINING_RECORD(
+                    Connection->SourceCids.Next->Next,
+                    QUIC_CID_HASH_ENTRY,
+                    Link);
+            CXPLAT_DBG_ASSERT(InitialSourceCid->CID.IsInitial);
+            Connection->SourceCids.Next->Next = Connection->SourceCids.Next->Next->Next;
+            CXPLAT_DBG_ASSERT(!InitialSourceCid->CID.IsInLookupTable);
+            QuicTraceEvent(
+                ConnSourceCidRemoved,
+                "[conn][%p] (SeqNum=%llu) Removed Source CID: %!CID!",
+                Connection,
+                InitialSourceCid->CID.SequenceNumber,
+                CASTED_CLOG_BYTEARRAY(InitialSourceCid->CID.Length, InitialSourceCid->CID.Data));
+            CXPLAT_FREE(InitialSourceCid, QUIC_POOL_CIDHASH);
         }
 
         //
@@ -1523,7 +1550,7 @@ QuicCryptoProcessTlsCompletion(
         QuicConnGenerateNewSourceCids(Connection, FALSE);
 
         CXPLAT_DBG_ASSERT(Crypto->TlsState.NegotiatedAlpn != NULL);
-        if (!QuicConnIsServer(Connection)) {
+        if (QuicConnIsClient(Connection)) {
             //
             // Currently, NegotiatedAlpn points into TLS state memory, which
             // doesn't live as long as the connection. Update it to point to the
@@ -1554,7 +1581,13 @@ QuicCryptoProcessTlsCompletion(
         }
         Connection->Stats.ResumptionSucceeded = Crypto->TlsState.SessionResumed;
 
-        QuicSendSetSendFlag(&Connection->Send, QUIC_CONN_SEND_FLAG_PMTUD);
+        //
+        // A handshake complete means the peer has been validated. Trigger MTU
+        // discovery on path.
+        //
+        CXPLAT_DBG_ASSERT(Connection->PathsCount == 1);
+        QUIC_PATH* Path = &Connection->Paths[0];
+        QuicMtuDiscoveryPeerValidated(&Path->MtuDiscovery, Connection);
 
         if (QuicConnIsServer(Connection) &&
             Crypto->TlsState.BufferOffset1Rtt != 0 &&
@@ -1601,7 +1634,6 @@ QuicCryptoCustomCertValidationComplete(
     _In_ BOOLEAN Result
     )
 {
-    CXPLAT_TEL_ASSERT(Crypto->CertValidationPending);
     if (!Crypto->CertValidationPending) {
         return;
     }
@@ -1657,7 +1689,7 @@ QuicCryptoProcessData(
         QUIC_CONNECTION* Connection = QuicCryptoGetConnection(Crypto);
 
         Buffer.Length =
-            QuicCrytpoTlsGetCompleteTlsMessagesLength(
+            QuicCryptoTlsGetCompleteTlsMessagesLength(
                 Buffer.Buffer, Buffer.Length);
         if (Buffer.Length == 0) {
             QuicTraceLogConnVerbose(
@@ -1679,15 +1711,13 @@ QuicCryptoProcessData(
                     Connection,
                     Buffer.Buffer,
                     Buffer.Length,
-                    &Info
-#ifdef CXPLAT_TLS_SECRETS_SUPPORT
+                    &Info,
                     //
                     // On server, TLS is initialized before the listener
                     // is told about the connection, so TlsSecrets is still
                     // NULL.
                     //
-                    ,  NULL
-#endif
+                    NULL
                     );
             if (QUIC_FAILED(Status)) {
                 QuicConnTransportError(
@@ -1715,8 +1745,8 @@ QuicCryptoProcessData(
             QuicCryptoValidate(Crypto);
 
             Info.QuicVersion = Connection->Stats.QuicVersion;
-            Info.LocalAddress = &Connection->Paths[0].LocalAddress;
-            Info.RemoteAddress = &Connection->Paths[0].RemoteAddress;
+            Info.LocalAddress = &Connection->Paths[0].Route.LocalAddress;
+            Info.RemoteAddress = &Connection->Paths[0].Route.RemoteAddress;
             Info.CryptoBufferLength = Buffer.Length;
             Info.CryptoBuffer = Buffer.Buffer;
 

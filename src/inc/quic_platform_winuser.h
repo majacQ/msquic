@@ -28,15 +28,12 @@ Environment:
 #define WIN32_LEAN_AND_MEAN 1
 #endif
 
-#ifdef QUIC_UWP_BUILD
-#undef WINAPI_FAMILY
-#define WINAPI_FAMILY WINAPI_FAMILY_DESKTOP_APP
-#endif
-
 #pragma warning(push) // Don't care about OACR warnings in publics
 #pragma warning(disable:26036)
+#pragma warning(disable:28251)
 #pragma warning(disable:28252)
 #pragma warning(disable:28253)
+#pragma warning(disable:28301)
 #pragma warning(disable:5105) // The conformant preprocessor along with the newest SDK throws this warning for a macro.
 #include <windows.h>
 #include <winsock2.h>
@@ -44,7 +41,7 @@ Environment:
 #include <bcrypt.h>
 #include <stdlib.h>
 #include <winternl.h>
-#include <msquic_winuser.h>
+#include "msquic_winuser.h"
 #ifdef _M_X64
 #pragma warning(disable:28251) // Inconsistent annotation for function
 #include <intrin.h>
@@ -80,48 +77,6 @@ extern "C" {
     (ALIGN_DOWN(((ULONG)(length) + sizeof(type) - 1), type))
 
 #define INIT_NO_SAL(X) // No-op since Windows supports SAL
-
-//
-// Library Initialization
-//
-
-//
-// Called in DLLMain or DriverEntry.
-//
-_IRQL_requires_max_(PASSIVE_LEVEL)
-void
-CxPlatSystemLoad(
-    void
-    );
-
-//
-// Called in DLLMain or DriverUnload.
-//
-_IRQL_requires_max_(PASSIVE_LEVEL)
-void
-CxPlatSystemUnload(
-    void
-    );
-
-//
-// Initializes the PAL library. Calls to this and
-// CxPlatformUninitialize must be serialized and cannot overlap.
-//
-_IRQL_requires_max_(PASSIVE_LEVEL)
-QUIC_STATUS
-CxPlatInitialize(
-    void
-    );
-
-//
-// Uninitializes the PAL library. Calls to this and
-// CxPlatformInitialize must be serialized and cannot overlap.
-//
-_IRQL_requires_max_(PASSIVE_LEVEL)
-void
-CxPlatUninitialize(
-    void
-    );
 
 //
 // Static Analysis Interfaces
@@ -217,6 +172,17 @@ CxPlatLogAssert(
 
 #define CXPLAT_FRE_ASSERT(_exp)          CXPLAT_ASSERT_CRASH(_exp, CXPLAT_WIDE_STRING(#_exp))
 #define CXPLAT_FRE_ASSERTMSG(_exp, _msg) CXPLAT_ASSERT_CRASH(_exp, CXPLAT_WIDE_STRING(_msg))
+
+#ifdef QUIC_UWP_BUILD
+WINBASEAPI
+_When_(lpModuleName == NULL,_Ret_notnull_)
+_When_(lpModuleName != NULL,_Ret_maybenull_)
+HMODULE
+WINAPI
+GetModuleHandleW(
+    _In_opt_ LPCWSTR lpModuleName
+    );
+#endif
 
 //
 // Verifier is enabled.
@@ -433,15 +399,35 @@ typedef SRWLOCK CXPLAT_DISPATCH_RW_LOCK;
 #endif
 
 #if defined (_WIN64)
+
 #define QuicIncrementLongPtrNoFence InterlockedIncrementNoFence64
 #define QuicDecrementLongPtrRelease InterlockedDecrementRelease64
 #define QuicCompareExchangeLongPtrNoFence InterlockedCompareExchangeNoFence64
-#define QuicReadLongPtrNoFence ReadNoFence64
+
+#ifdef QUIC_RESTRICTED_BUILD
+#define QuicReadLongPtrNoFence(p) ((LONG64)(*p))
 #else
+#define QuicReadLongPtrNoFence ReadNoFence64
+#endif
+
+#else
+
 #define QuicIncrementLongPtrNoFence InterlockedIncrementNoFence
 #define QuicDecrementLongPtrRelease InterlockedDecrementRelease
 #define QuicCompareExchangeLongPtrNoFence InterlockedCompareExchangeNoFence
+
+#ifdef QUIC_RESTRICTED_BUILD
+#define QuicReadLongPtrNoFence(p) ((LONG)(*p))
+#else
 #define QuicReadLongPtrNoFence ReadNoFence
+#endif
+
+#endif
+
+#ifdef QUIC_RESTRICTED_BUILD
+#define QuicReadPtrNoFence(p) ((void*)(*p))
+#else
+#define QuicReadPtrNoFence ReadPointerNoFence
 #endif
 
 typedef LONG_PTR CXPLAT_REF_COUNT;
@@ -555,6 +541,18 @@ typedef HANDLE CXPLAT_EVENT;
 //
 // Time Measurement Interfaces
 //
+
+#ifdef QUIC_UWP_BUILD
+WINBASEAPI
+_Success_(return != FALSE)
+BOOL
+WINAPI
+GetSystemTimeAdjustment(
+    _Out_ PDWORD lpTimeAdjustment,
+    _Out_ PDWORD lpTimeIncrement,
+    _Out_ PBOOL lpTimeAdjustmentDisabled
+    );
+#endif
 
 //
 // Returns the worst-case system timer resolution (in us).
@@ -725,7 +723,7 @@ extern CXPLAT_PROCESSOR_INFO* CxPlatProcessorInfo;
 extern uint64_t* CxPlatNumaMasks;
 extern uint32_t* CxPlatProcessorGroupOffsets;
 
-#ifdef QUIC_UWP_BUILD
+#if defined(QUIC_RESTRICTED_BUILD)
 DWORD CxPlatProcMaxCount();
 DWORD CxPlatProcActiveCount();
 #else
@@ -752,17 +750,18 @@ CxPlatProcCurrentNumber(
 //
 // This is the undocumented interface for setting a thread's name. This is
 // essentially what SetThreadDescription does, but that is not available in
-// older versions of Windows.
+// older versions of Windows. These API's are suffixed _PRIVATE in order
+// to not colide with the built in windows definitions, which are not gated
+// behind any preprocessor macros
 //
-#if !defined(QUIC_UWP_BUILD)
-#define ThreadNameInformation ((THREADINFOCLASS)38)
+#if !defined(QUIC_RESTRICTED_BUILD)
+#define ThreadNameInformationPrivate ((THREADINFOCLASS)38)
 
-typedef struct _THREAD_NAME_INFORMATION {
+typedef struct _THREAD_NAME_INFORMATION_PRIVATE {
     UNICODE_STRING ThreadName;
-} THREAD_NAME_INFORMATION, *PTHREAD_NAME_INFORMATION;
+} THREAD_NAME_INFORMATION_PRIVATE, *PTHREAD_NAME_INFORMATION_PRIVATE;
 
 __kernel_entry
-NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtSetInformationThread(
@@ -770,6 +769,17 @@ NtSetInformationThread(
     _In_ THREADINFOCLASS ThreadInformationClass,
     _In_reads_bytes_(ThreadInformationLength) PVOID ThreadInformation,
     _In_ ULONG ThreadInformationLength
+    );
+#endif
+
+#ifdef QUIC_UWP_BUILD
+WINBASEAPI
+BOOL
+WINAPI
+SetThreadGroupAffinity(
+    _In_ HANDLE hThread,
+    _In_ CONST GROUP_AFFINITY* GroupAffinity,
+    _Out_opt_ PGROUP_AFFINITY PreviousGroupAffinity
     );
 #endif
 
@@ -880,14 +890,14 @@ CxPlatThreadCreate(
             ARRAYSIZE(WideName) - 1,
             Config->Name,
             _TRUNCATE);
-#if defined(QUIC_UWP_BUILD)
+#if defined(QUIC_RESTRICTED_BUILD)
         SetThreadDescription(*Thread, WideName);
 #else
-        THREAD_NAME_INFORMATION ThreadNameInfo;
+        THREAD_NAME_INFORMATION_PRIVATE ThreadNameInfo;
         RtlInitUnicodeString(&ThreadNameInfo.ThreadName, WideName);
         NtSetInformationThread(
             *Thread,
-            ThreadNameInformation,
+            ThreadNameInformationPrivate,
             &ThreadNameInfo,
             sizeof(ThreadNameInfo));
 #endif
@@ -963,7 +973,7 @@ CxPlatUtf8ToWideChar(
 // Network Compartment ID interfaces
 //
 
-#ifndef QUIC_UWP_BUILD
+#if !defined(QUIC_RESTRICTED_BUILD)
 
 #define QUIC_COMPARTMENT_ID NET_IF_COMPARTMENT_ID
 

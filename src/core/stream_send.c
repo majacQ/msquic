@@ -199,7 +199,7 @@ QuicStreamSendShutdown(
         }
 
         Stream->Flags.LocalCloseReset = TRUE;
-        Stream->SendCloseErrorCode = ErrorCode;
+        Stream->SendShutdownErrorCode = ErrorCode;
 
         if (!Silent) {
             //
@@ -770,7 +770,7 @@ QuicStreamWriteOneFrame(
     QuicTraceLogStreamVerbose(
         AddFrame,
         Stream,
-        "Built stream frame, offset=%llu len=%lu fin=%hhu",
+        "Built stream frame, offset=%llu len=%hu fin=%hhu",
         Frame.Offset,
         (uint16_t)Frame.Length,
         Frame.Fin);
@@ -1027,6 +1027,12 @@ QuicStreamSendWrite(
         Builder->Metadata->Flags.KeyType == QUIC_PACKET_KEY_0_RTT);
     CXPLAT_DBG_ASSERT(QuicStreamAllowedByPeer(Stream));
 
+    QuicTraceEvent(
+        StreamWriteFrames,
+        "[strm][%p] Writing frames to packet %llu",
+        Stream,
+        Builder->Metadata->PacketId);
+
     if (Stream->SendFlags & QUIC_STREAM_SEND_FLAG_MAX_DATA) {
 
         QUIC_MAX_STREAM_DATA_EX Frame = { Stream->ID, Stream->MaxAllowedRecvOffset };
@@ -1048,7 +1054,7 @@ QuicStreamSendWrite(
 
     if (Stream->SendFlags & QUIC_STREAM_SEND_FLAG_SEND_ABORT) {
 
-        QUIC_RESET_STREAM_EX Frame = { Stream->ID, Stream->SendCloseErrorCode, Stream->MaxSentLength };
+        QUIC_RESET_STREAM_EX Frame = { Stream->ID, Stream->SendShutdownErrorCode, Stream->MaxSentLength };
 
         if (QuicResetStreamFrameEncode(
                 &Frame,
@@ -1067,7 +1073,7 @@ QuicStreamSendWrite(
 
     if (Stream->SendFlags & QUIC_STREAM_SEND_FLAG_RECV_ABORT) {
 
-        QUIC_STOP_SENDING_EX Frame = { Stream->ID, Stream->SendCloseErrorCode };
+        QUIC_STOP_SENDING_EX Frame = { Stream->ID, Stream->RecvShutdownErrorCode };
 
         if (QuicStopSendingFrameEncode(
                 &Frame,
@@ -1307,7 +1313,7 @@ QuicStreamOnAck(
     CXPLAT_DBG_ASSERT(FollowingOffset <= Stream->QueuedSendOffset);
 
     QuicTraceLogStreamVerbose(
-        AckRange,
+        AckRangeMsg,
         Stream,
         "Received ack for %d bytes, offset=%llu, FF=0x%hx",
         (int32_t)Length,

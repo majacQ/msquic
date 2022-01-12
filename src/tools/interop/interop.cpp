@@ -340,7 +340,7 @@ class InteropConnection {
     char* NegotiatedAlpn;
     const uint8_t* ResumptionTicket;
     uint32_t ResumptionTicketLength;
-    CXPLAT_TLS_SECRETS TlsSecrets;
+    QUIC_TLS_SECRETS TlsSecrets;
     const char* SslKeyLogFile;
 public:
     bool VersionUnsupported : 1;
@@ -378,6 +378,8 @@ public:
             Settings.DesiredVersionsList = DesiredVersions;
             Settings.DesiredVersionsListLength = ARRAYSIZE(DesiredVersions);
             Settings.IsSet.DesiredVersionsList = TRUE;
+            Settings.VersionNegotiationExtEnabled = TRUE;
+            Settings.IsSet.VersionNegotiationExtEnabled = TRUE;
             VERIFY_QUIC_SUCCESS(
                 MsQuic->SetParam(
                     Connection,
@@ -391,6 +393,8 @@ public:
             Settings.DesiredVersionsList = DesiredVersions;
             Settings.DesiredVersionsListLength = ARRAYSIZE(DesiredVersions);
             Settings.IsSet.DesiredVersionsList = TRUE;
+            Settings.VersionNegotiationExtEnabled = TRUE;
+            Settings.IsSet.VersionNegotiationExtEnabled = TRUE;
             VERIFY_QUIC_SUCCESS(
                 MsQuic->SetParam(
                     Connection,

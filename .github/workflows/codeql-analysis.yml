@@ -6,13 +6,11 @@ on:
     branches:
       - main
       - release/*
-      - feature/*
   pull_request:
     # The branches below must be a subset of the branches above
     branches:
       - main
       - release/*
-      - feature/*
   schedule:
     - cron: '0 17 * * 1'
 
@@ -37,7 +35,7 @@ jobs:
          mkdir build
          cd build
          cmake ..
-         cmake --build . --target OpenSSL_Build
+         cmake --build . --target OpenSSL_Target
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v1

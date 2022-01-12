@@ -7,7 +7,7 @@
 
 #define _CRT_SECURE_NO_WARNINGS 1
 
-#include <msquichelper.h>
+#include "msquichelper.h"
 
 extern const QUIC_API_TABLE* MsQuic;
 extern HQUIC Configuration;
@@ -160,7 +160,7 @@ struct HttpConnection {
 private:
     HQUIC QuicConnection;
     const char* SslKeyLogFile;
-    CXPLAT_TLS_SECRETS TlsSecrets;
+    QUIC_TLS_SECRETS TlsSecrets;
     long RefCount;
 private:
     static

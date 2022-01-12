@@ -157,8 +157,12 @@ function Wait-ForRemote {
     param ($Job)
     # Ping sidechannel socket on 9999 to tell the app to die
     $Socket = New-Object System.Net.Sockets.UDPClient
+    $BytesToSend = @(
+        0x57, 0xe6, 0x15, 0xff, 0x26, 0x4f, 0x0e, 0x57,
+        0x88, 0xab, 0x07, 0x96, 0xb2, 0x58, 0xd1, 0x1c
+    )
     for ($i = 0; $i -lt 120; $i++) {
-        $Socket.Send(@(1), 1, $RemoteAddress, 9999) | Out-Null
+        $Socket.Send($BytesToSend, $BytesToSend.Length, $RemoteAddress, 9999) | Out-Null
         $Completed = Wait-Job -Job $Job -Timeout 1
         if ($null -ne $Completed) {
             break;
@@ -282,6 +286,12 @@ function Get-ExeName {
 
 function Remove-PerfServices {
     if ($IsWindows) {
+        if ($null -ne (Get-Process -Name "secnetperf" -ErrorAction Ignore)) {
+            try {
+                Stop-Process -Name "secnetperf" -Force | Out-Null
+            }
+            catch {}
+        }
         if ($null -ne (Get-Service -Name "secnetperfdrvpriv" -ErrorAction Ignore)) {
             try {
                 net.exe stop secnetperfdrvpriv /y | Out-Null
@@ -298,6 +308,12 @@ function Remove-PerfServices {
         }
 
         Invoke-TestCommand -Session $Session -ScriptBlock {
+            if ($null -ne (Get-Process -Name "secnetperf" -ErrorAction Ignore)) {
+                try {
+                    Stop-Process -Name "secnetperf" -Force | Out-Null
+                }
+                catch {}
+            }
             if ($null -ne (Get-Service -Name "secnetperfdrvpriv" -ErrorAction Ignore)) {
                 try {
                     net.exe stop secnetperfdrvpriv /y | Out-Null
@@ -344,7 +360,7 @@ function Invoke-RemoteExe {
         $LogScript = Join-Path $RemoteDirectory log.ps1
 
         if ($Record) {
-            & $LogScript -Start -Profile $LogProfile -ProfileInScriptDirectory | Out-Null
+            & $LogScript -Start -Profile $LogProfile -ProfileInScriptDirectory -InstanceName msquicperf | Out-Null
         }
 
         $Arch = Split-Path (Split-Path $Exe -Parent) -Leaf
@@ -358,17 +374,20 @@ function Invoke-RemoteExe {
             net.exe start msquicpriv
         }
 
-        & $Exe ($RunArgs).Split(" ")
-
-        # Uninstall the kernel mode test driver and revert the msquic driver.
-        if ($Kernel) {
-            net.exe stop msquicpriv /y | Out-Null
-            sc.exe delete secnetperfdrvpriv | Out-Null
-            sc.exe delete msquicpriv | Out-Null
+        try {
+            & $Exe ($RunArgs).Split(" ")
+        } finally {
+            # Uninstall the kernel mode test drivers.
+            if ($Kernel) {
+                net.exe stop secnetperfdrvpriv /y | Out-Null
+                net.exe stop msquicpriv /y | Out-Null
+                sc.exe delete secnetperfdrvpriv | Out-Null
+                sc.exe delete msquicpriv | Out-Null
+            }
         }
 
         if ($Record) {
-            & $LogScript -Stop -OutputPath (Join-Path $RemoteDirectory serverlogs server) -ProfileInScriptDirectory | Out-Null
+            & $LogScript -Stop -OutputPath (Join-Path $RemoteDirectory serverlogs server) -ProfileInScriptDirectory -InstanceName msquicperf | Out-Null
         }
     } -AsJob -ArgumentList $Exe, $RunArgs, $BasePath, $Record, $LogProfile, $Kernel, $RemoteDirectory
 }
@@ -433,7 +452,7 @@ function Start-Tracing {
     param($LocalDirectory)
     if ($Record -and !$Local) {
         $LogScript = Join-Path $LocalDirectory log.ps1
-        & $LogScript -Start -Profile $LogProfile -ProfileInScriptDirectory | Out-Null
+        & $LogScript -Start -Profile $LogProfile -ProfileInScriptDirectory -InstanceName msquicperf | Out-Null
     }
 }
 
@@ -441,7 +460,7 @@ function Stop-Tracing {
     param($LocalDirectory, $OutputDir, $Test)
     if ($Record -and !$Local) {
         $LogScript = Join-Path $LocalDirectory log.ps1
-        & $LogScript -Stop -OutputPath (Join-Path $OutputDir $Test.ToString() client) -ProfileInScriptDirectory | Out-Null
+        & $LogScript -Stop -OutputPath (Join-Path $OutputDir $Test.ToString() client) -ProfileInScriptDirectory -InstanceName msquicperf | Out-Null
     }
 }
 
@@ -507,11 +526,17 @@ function Invoke-LocalExe {
 
     $Stopwatch =  [system.diagnostics.stopwatch]::StartNew()
 
-    $LocalJob = Start-Job -ScriptBlock { & $Using:Exe ($Using:RunArgs).Split(" ") }
+    $LocalJob = $null
 
-    # Wait for the job to finish
-    Wait-Job -Job $LocalJob -Timeout $Timeout | Out-Null
-    Stop-Job -Job $LocalJob | Out-Null
+    try {
+        $LocalJob = Start-Job -ScriptBlock { & $Using:Exe ($Using:RunArgs).Split(" ") }
+    } finally {
+        if ($null -ne $LocalJob) {
+            # Wait for the job to finish
+            Wait-Job -Job $LocalJob -Timeout $Timeout | Out-Null
+            Stop-Job -Job $LocalJob | Out-Null
+        }
+    }
 
     $RetVal = Receive-Job -Job $LocalJob
 

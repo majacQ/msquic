@@ -14,7 +14,7 @@ Abstract:
 #ifndef _MSQUICP_
 #define _MSQUICP_
 
-#include <msquic.h>
+#include "msquic.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -22,6 +22,21 @@ extern "C" {
 
 typedef struct CXPLAT_RECV_DATA CXPLAT_RECV_DATA;
 typedef struct CXPLAT_SEND_DATA CXPLAT_SEND_DATA;
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+(QUIC_API * QUIC_TEST_DATAPATH_CREATE_HOOK)(
+    _Inout_opt_ QUIC_ADDR* RemoteAddress,
+    _Inout_opt_ QUIC_ADDR* LocalAddress
+    );
+
+typedef
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+(QUIC_API * QUIC_TEST_DATAPATH_GET_ADDRESS_HOOK)(
+    _Inout_ QUIC_ADDR* Address
+    );
 
 //
 // Returns TRUE to drop the packet.
@@ -46,6 +61,9 @@ BOOLEAN
     );
 
 typedef struct QUIC_TEST_DATAPATH_HOOKS {
+    QUIC_TEST_DATAPATH_CREATE_HOOK Create;
+    QUIC_TEST_DATAPATH_GET_ADDRESS_HOOK GetLocalAddress;
+    QUIC_TEST_DATAPATH_GET_ADDRESS_HOOK GetRemoteAddress;
     QUIC_TEST_DATAPATH_RECEIVE_HOOK Receive;
     QUIC_TEST_DATAPATH_SEND_HOOK Send;
 } QUIC_TEST_DATAPATH_HOOKS;
@@ -76,45 +94,21 @@ typedef struct QUIC_PRIVATE_TRANSPORT_PARAMETER {
 } QUIC_PRIVATE_TRANSPORT_PARAMETER;
 
 //
-// This struct enables QUIC applications to support SSLKEYLOGFILE
-// for debugging packet captures with e.g. Wireshark.
-//
-
-#define CXPLAT_TLS_SECRETS_MAX_SECRET_LEN 64
-typedef struct CXPLAT_TLS_SECRETS {
-    uint8_t SecretLength;
-    struct {
-        uint8_t ClientRandom : 1;
-        uint8_t ClientEarlyTrafficSecret : 1;
-        uint8_t ClientHandshakeTrafficSecret : 1;
-        uint8_t ServerHandshakeTrafficSecret : 1;
-        uint8_t ClientTrafficSecret0 : 1;
-        uint8_t ServerTrafficSecret0 : 1;
-    } IsSet;
-    uint8_t ClientRandom[32];
-    uint8_t ClientEarlyTrafficSecret[CXPLAT_TLS_SECRETS_MAX_SECRET_LEN];
-    uint8_t ClientHandshakeTrafficSecret[CXPLAT_TLS_SECRETS_MAX_SECRET_LEN];
-    uint8_t ServerHandshakeTrafficSecret[CXPLAT_TLS_SECRETS_MAX_SECRET_LEN];
-    uint8_t ClientTrafficSecret0[CXPLAT_TLS_SECRETS_MAX_SECRET_LEN];
-    uint8_t ServerTrafficSecret0[CXPLAT_TLS_SECRETS_MAX_SECRET_LEN];
-} CXPLAT_TLS_SECRETS;
-
-//
 // The different private parameters for QUIC_PARAM_LEVEL_GLOBAL.
 //
 
-#define QUIC_PARAM_GLOBAL_TEST_DATAPATH_HOOKS           0x80000001  // QUIC_TEST_DATAPATH_HOOKS*
-#define QUIC_PARAM_GLOBAL_ALLOC_FAIL_DENOMINATOR        0x80000002  // uint32_t
-#define QUIC_PARAM_GLOBAL_ALLOC_FAIL_CYCLE              0x80000003  // uint32_t
+#define QUIC_PARAM_GLOBAL_TEST_DATAPATH_HOOKS           0x5000001  // QUIC_TEST_DATAPATH_HOOKS*
+#define QUIC_PARAM_GLOBAL_ALLOC_FAIL_DENOMINATOR        0x5000002  // uint32_t
+#define QUIC_PARAM_GLOBAL_ALLOC_FAIL_CYCLE              0x5000003  // uint32_t
 
 //
 // The different private parameters for QUIC_PARAM_LEVEL_CONNECTION.
 //
 
-#define QUIC_PARAM_CONN_FORCE_KEY_UPDATE                0x80000001  // No payload
-#define QUIC_PARAM_CONN_FORCE_CID_UPDATE                0x80000002  // No payload
-#define QUIC_PARAM_CONN_TEST_TRANSPORT_PARAMETER        0x80000003  // QUIC_PRIVATE_TRANSPORT_PARAMETER
-#define QUIC_PARAM_CONN_TLS_SECRETS                     0x80000004  // CXPLAT_TLS_SECRETS (SSLKEYLOGFILE compatible)
+#define QUIC_PARAM_CONN_FORCE_KEY_UPDATE                0x15000001  // No payload
+#define QUIC_PARAM_CONN_FORCE_CID_UPDATE                0x15000002  // No payload
+#define QUIC_PARAM_CONN_TEST_TRANSPORT_PARAMETER        0x15000003  // QUIC_PRIVATE_TRANSPORT_PARAMETER
+#define QUIC_PARAM_CONN_KEEP_ALIVE_PADDING              0x15000004  // uint16_t
 
 #if defined(__cplusplus)
 }

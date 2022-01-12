@@ -36,15 +36,12 @@
 #define QUIC_VERSION_ONLY 1
 #include "msquic.ver"
 
-#if defined(__cplusplus)
-extern "C" {
-#endif
-
 //
 // Internal Core Headers.
 //
 #include "quicdef.h"
 #include "cid.h"
+#include "mtu_discovery.h"
 #include "path.h"
 #include "transport_params.h"
 #include "lookup.h"
@@ -76,7 +73,4 @@ extern "C" {
 #include "connection.h"
 #include "packet_builder.h"
 #include "listener.h"
-
-#if defined(__cplusplus)
-}
-#endif
+#include "cubic.h"

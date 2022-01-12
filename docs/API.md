@@ -67,6 +67,10 @@ This doesn't mean the app isn't allowed to do any work in the callback. In fact,
 
 One important aspect of this design is that all blocking calls invoked on a callback always happen inline (to prevent deadlocks), and will supercede any calls in progress or queued from a separate thread.
 
+## Settings and Configuration
+
+MsQuic supports a variety of configuration options available to both application developers and administrators deploying MsQuic. See [Settings](Settings.md) for a detailed explanation of these settings and configuration options.
+
 # API Objects
 
 ## Library Function Table
@@ -120,10 +124,10 @@ Streams are the primary means of exchanging app data over a connection. Streams 
 
 A stream handle represents a single QUIC stream. It can be locally created by a call to [StreamOpen](api/StreamOpen.md) or remotely created and then indicated to the app via the connection's callback handler via a `QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED` event. Locally created streams must be started (via [StreamStart](api/StreamStart.md)) before they can send or receive data. Remote streams are already started when indicated to the app.
 
-Once the stream handle is available and started, the app can start receiving events on its callback handler (such as `QUIC_STREAM_EVENT_RECV`) and start sending on the stream (via [StreamSend](api/StreamSend.md)). For more details see [Using Streams](Streams.md).
+Once the stream handle is available and started, the app can start receiving events on its callback handler (such as `QUIC_STREAM_EVENT_RECEIVE`) and start sending on the stream (via [StreamSend](api/StreamSend.md)). For more details see [Using Streams](Streams.md).
 
 ## Datagrams
 
-MsQuic supports the [unreliable datagram extension](https://tools.ietf.org/html/draft-ietf-quic-datagram) which allows for the app to send and receive unreliable (i.e. not retransmitted on packet loss) data securely. To enable support for receiving datagrams, the app must set `DatagramReceiveEnabled` to `TRUE` in its `QUIC_SETTINGS`. During the handshake, support for receiving datagrams is negotiated between endpoints. The app receives the `QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED` event to indicate if the peer supports receiving datagrams (and what the current maximum size is).
+MsQuic supports the [unreliable datagram extension](https://tools.ietf.org/html/draft-ietf-quic-datagram) which allows for the app to send and receive unreliable (i.e. not retransmitted on packet loss) data securely. To enable support for receiving datagrams, the app must set `DatagramReceiveEnabled` to `TRUE` in its [QUIC_SETTINGS](api/QUIC_SETTINGS.md). During the handshake, support for receiving datagrams is negotiated between endpoints. The app receives the `QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED` event to indicate if the peer supports receiving datagrams (and what the current maximum size is).
 
 If the peer has enabled receiving datagrams, then an app may call [DatagramSend](api/DatagramSend.md). If/when the app receives a datagram from the peer it will receive a `QUIC_CONNECTION_EVENT_DATAGRAM_RECEIVED` event.

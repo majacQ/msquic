@@ -10,13 +10,16 @@ This script provides helpers for building msquic.
     The CPU architecture to build for.
 
 .PARAMETER Platform
-    Specify which platform to build for
+    Specify which platform to build for.
+
+.PARAMETER Static
+    Specify a static library is preferred (shared is the default).
 
 .PARAMETER Tls
     The TLS library to use.
 
 .PARAMETER ToolchainFile
-    Toolchain file to use (if cross)
+    Toolchain file to use (if cross).
 
 .PARAMETER DisableLogs
     Disables log collection.
@@ -72,9 +75,6 @@ This script provides helpers for building msquic.
 .PARAMETER CI
     Build is occuring from CI
 
-.PARAMETER TlsSecretsSupport
-    Enables export of traffic secrets.
-
 .PARAMETER EnableTelemetryAsserts
     Enables telemetry asserts in release builds.
 
@@ -83,6 +83,9 @@ This script provides helpers for building msquic.
 
 .PARAMETER ExtraArtifactDir
     Add an extra classifier to the artifact directory to allow publishing alternate builds of same base library
+
+.PARAMETER LibraryName
+    Renames the library to whatever is passed in
 
 .EXAMPLE
     build.ps1
@@ -98,12 +101,15 @@ param (
     [string]$Config = "Debug",
 
     [Parameter(Mandatory = $false)]
-    [ValidateSet("x86", "x64", "arm", "arm64")]
+    [ValidateSet("x86", "x64", "arm", "arm64", "arm64ec")]
     [string]$Arch = "",
 
     [Parameter(Mandatory = $false)]
-    [ValidateSet("uwp", "windows", "linux", "macos")] # For future expansion
+    [ValidateSet("gamecore_console", "uwp", "windows", "linux", "macos", "android", "ios")] # For future expansion
     [string]$Platform = "",
+
+    [Parameter(Mandatory = $false)]
+    [switch]$Static = $false,
 
     [Parameter(Mandatory = $false)]
     [ValidateSet("schannel", "openssl")]
@@ -134,7 +140,7 @@ param (
     [switch]$Clean = $false,
 
     [Parameter(Mandatory = $false)]
-    [int32]$Parallel = -1,
+    [int32]$Parallel = -2,
 
     [Parameter(Mandatory = $false)]
     [switch]$DynamicCRT = $false,
@@ -164,73 +170,69 @@ param (
     [switch]$CI = $false,
 
     [Parameter(Mandatory = $false)]
-    [switch]$TlsSecretsSupport = $false,
-
-    [Parameter(Mandatory = $false)]
     [switch]$EnableTelemetryAsserts = $false,
 
     [Parameter(Mandatory = $false)]
     [switch]$UseSystemOpenSSLCrypto = $false,
 
     [Parameter(Mandatory = $false)]
-    [string]$ExtraArtifactDir = ""
+    [string]$ExtraArtifactDir = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$LibraryName = "msquic"
 )
 
 Set-StrictMode -Version 'Latest'
 $PSDefaultParameterValues['*:ErrorAction'] = 'Stop'
 
-if ("" -eq $Arch) {
-    if ($IsMacOS) {
-        $RunningArch = uname -m
-        if ("x86_64" -eq $RunningArch) {
-            $IsTranslated = sysctl -in sysctl.proc_translated
-            if ($IsTranslated) {
-                $Arch = "arm64"
-            } else {
-                $Arch = "x64"
-            }
-        } elseif ("arm64" -eq $RunningArch) {
-            $Arch = "arm64"
-        } else {
-            Write-Error "Unknown architecture"
-        }
+if ($Parallel -lt -1) {
+    if ($IsWindows) {
+        $Parallel = -1
     } else {
-        $Arch = "x64"
+        $Parallel = 0
     }
 }
+
+$BuildConfig = & (Join-Path $PSScriptRoot get-buildconfig.ps1) -Platform $Platform -Tls $Tls -Arch $Arch -ExtraArtifactDir $ExtraArtifactDir -Config $Config
+
+$Platform = $BuildConfig.Platform
+$Tls = $BuildConfig.Tls
+$Arch = $BuildConfig.Arch
+$ArtifactsDir = $BuildConfig.ArtifactsDir
 
 if ($Generator -eq "") {
-    if ($IsWindows) {
-        $Generator = "Visual Studio 16 2019"
-    } else {
+    if (!$IsWindows) {
         $Generator = "Unix Makefiles"
-    }
-}
-
-# Default TLS based on current platform.
-if ("" -eq $Tls) {
-    if ($IsWindows) {
-        $Tls = "schannel"
-    } else {
-        $Tls = "openssl"
-    }
-}
-
-if ("" -eq $Platform) {
-    if ($IsWindows) {
-        $Platform = "windows"
-    } elseif ($IsLinux) {
-        $Platform = "linux"
-    } elseif ($IsMacOS) {
-        $Platform = "macos"
-    } else {
-        Write-Error "Unsupported platform type!"
     }
 }
 
 if (!$IsWindows -And $Platform -eq "uwp") {
     Write-Error "[$(Get-Date)] Cannot build uwp on non windows platforms"
     exit
+}
+
+if (!$IsWindows -And ($Platform -eq "gamecore_console")) {
+    Write-Error "[$(Get-Date)] Cannot build gamecore on non windows platforms"
+    exit
+}
+
+if ($Arch -ne "x64" -And ($Platform -eq "gamecore_console")) {
+    Write-Error "[$(Get-Date)] Cannot build gamecore for non-x64 platforms"
+    exit
+}
+
+if ($Arch -eq "arm64ec") {
+    if (!$IsWindows) {
+        Write-Error "Arm64EC is only supported on Windows"
+    }
+    if ($Tls -eq "openssl") {
+        Write-Error "Arm64EC does not support openssl"
+    }
+}
+
+if ($Platform -eq "ios" -and !$Static) {
+    $Static = $true
+    Write-Host "iOS can only be built as static"
 }
 
 # Root directory of the project.
@@ -240,15 +242,7 @@ $RootDir = Split-Path $PSScriptRoot -Parent
 $BaseArtifactsDir = Join-Path $RootDir "artifacts"
 $BaseBuildDir = Join-Path $RootDir "build"
 
-$ArtifactsDir = Join-Path $BaseArtifactsDir "bin" $Platform
 $BuildDir = Join-Path $BaseBuildDir $Platform
-
-if ("" -eq $ExtraArtifactDir) {
-    $ArtifactsDir = Join-Path $ArtifactsDir "$($Arch)_$($Config)_$($Tls)"
-} else {
-    $ArtifactsDir = Join-Path $ArtifactsDir "$($Arch)_$($Config)_$($Tls)_$($ExtraArtifactDir)"
-}
-
 $BuildDir = Join-Path $BuildDir "$($Arch)_$($Tls)"
 
 if ($Clean) {
@@ -289,31 +283,55 @@ function CMake-Execute([String]$Arguments) {
 
 # Uses cmake to generate the build configuration files.
 function CMake-Generate {
-    $Arguments = "-G"
+    $Arguments = ""
 
     if ($Generator.Contains(" ")) {
         $Generator = """$Generator"""
     }
 
     if ($IsWindows) {
-        $Arguments += " $Generator -A "
-        switch ($Arch) {
-            "x86"   { $Arguments += "Win32" }
-            "x64"   { $Arguments += "x64" }
-            "arm"   { $Arguments += "arm" }
-            "arm64" { $Arguments += "arm64" }
-        }
-    } elseif ($IsMacOS) {
-        $Arguments += " $Generator"
-        switch ($Arch) {
-            "x64"   { $Arguments += " -DCMAKE_OSX_ARCHITECTURES=x86_64"}
-            "arm64" { $Arguments += " -DCMAKE_OSX_ARCHITECTURES=arm64"}
+        if ($Generator.Contains("Visual Studio") -or [string]::IsNullOrWhiteSpace($Generator)) {
+            if ($Generator.Contains("Visual Studio")) {
+                $Arguments += " -G $Generator"
+            }
+            $Arguments += " -A "
+            switch ($Arch) {
+                "x86"   { $Arguments += "Win32" }
+                "x64"   { $Arguments += "x64" }
+                "arm"   { $Arguments += "arm" }
+                "arm64" { $Arguments += "arm64" }
+                "arm64ec" { $Arguments += "arm64ec" }
+            }
+        } else {
+            Write-Host "Non VS based generators must be run from a Visual Studio Developer Powershell Prompt matching the passed in architecture"
+            $Arguments += " -G $Generator"
         }
     } else {
         $Arguments += " $Generator"
     }
+    if ($Platform -eq "ios") {
+        $IosTCFile = Join-Path $RootDir cmake toolchains ios.cmake
+        $Arguments +=  " -DCMAKE_TOOLCHAIN_FILE=""$IosTCFile"" -DDEPLOYMENT_TARGET=""13.0"" -DENABLE_ARC=0 -DCMAKE_OSX_DEPLOYMENT_TARGET=""13.0"""
+        switch ($Arch) {
+            "x64"   { $Arguments += " -DPLATFORM=SIMULATOR64"}
+            "arm64" { $Arguments += " -DPLATFORM=OS64"}
+        }
+    }
+    if ($Platform -eq "macos") {
+        switch ($Arch) {
+            "x64"   { $Arguments += " -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=""10.15"""}
+            "arm64" { $Arguments += " -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=""11.0"""}
+        }
+    }
+    if($Static) {
+        $Arguments += " -DQUIC_BUILD_SHARED=off"
+    }
     $Arguments += " -DQUIC_TLS=" + $Tls
-    $Arguments += " -DQUIC_OUTPUT_DIR=" + $ArtifactsDir
+    $Arguments += " -DQUIC_OUTPUT_DIR=""$ArtifactsDir"""
+
+    if ($IsLinux) {
+        $Arguments += " -DQUIC_LINUX_LOG_ENCODER=lttng"
+    }
     if (!$DisableLogs) {
         $Arguments += " -DQUIC_ENABLE_LOGGING=on"
     }
@@ -333,7 +351,11 @@ function CMake-Generate {
         $Arguments += " -DQUIC_BUILD_PERF=off"
     }
     if (!$IsWindows) {
-        $Arguments += " -DCMAKE_BUILD_TYPE=" + $Config
+        $ConfigToBuild = $Config;
+        if ($Config -eq "Release") {
+            $ConfigToBuild = "RelWithDebInfo"
+        }
+        $Arguments += " -DCMAKE_BUILD_TYPE=" + $ConfigToBuild
     }
     if ($DynamicCRT) {
         $Arguments += " -DQUIC_STATIC_LINK_CRT=off"
@@ -344,8 +366,12 @@ function CMake-Generate {
     if ($Platform -eq "uwp") {
         $Arguments += " -DCMAKE_SYSTEM_NAME=WindowsStore -DCMAKE_SYSTEM_VERSION=10 -DQUIC_UWP_BUILD=on -DQUIC_STATIC_LINK_CRT=Off"
     }
+    # On gamecore, only the main binary can be built.
+    if ($Platform -eq "gamecore_console") {
+        $Arguments += " -DQUIC_GAMECORE_BUILD=on -DQUIC_STATIC_LINK_CRT=Off -DQUIC_BUILD_TEST=off -DQUIC_BUILD_TOOLS=off -DQUIC_BUILD_PERF=off"
+    }
     if ($ToolchainFile -ne "") {
-        $Arguments += " ""-DCMAKE_TOOLCHAIN_FILE=" + $ToolchainFile + """"
+        $Arguments += " -DCMAKE_TOOLCHAIN_FILE=""$ToolchainFile"""
     }
     if ($SkipPdbAltPath) {
         $Arguments += " -DQUIC_PDBALTPATH=OFF"
@@ -355,12 +381,11 @@ function CMake-Generate {
     }
     if ($CI) {
         $Arguments += " -DQUIC_CI=ON"
-        $Arguments += " -DQUIC_CI_CONFIG=$Config"
+        if ($Platform -eq "android" -or $ToolchainFile -ne "") {
+            $Arguments += " -DQUIC_SKIP_CI_CHECKS=ON"
+        }
         $Arguments += " -DQUIC_VER_BUILD_ID=$env:BUILD_BUILDID"
         $Arguments += " -DQUIC_VER_SUFFIX=-official"
-    }
-    if ($TlsSecretsSupport) {
-        $Arguments += " -DQUIC_TLS_SECRETS_SUPPORT=on"
     }
     if ($EnableTelemetryAsserts) {
         $Arguments += " -DQUIC_TELEMETRY_ASSERTS=on"
@@ -368,18 +393,26 @@ function CMake-Generate {
     if ($UseSystemOpenSSLCrypto) {
         $Arguments += " -DQUIC_USE_SYSTEM_LIBCRYPTO=on"
     }
+    if ($Platform -eq "android") {
+        $env:PATH = "$env:ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$env:PATH"
+        switch ($Arch) {
+            "x86"   { $Arguments += " -DANDROID_ABI=x86"}
+            "x64"   { $Arguments += " -DANDROID_ABI=x86_64" }
+            "arm"   { $Arguments += " -DANDROID_ABI=armeabi-v7a" }
+            "arm64" { $Arguments += " -DANDROID_ABI=arm64-v8a" }
+        }
+        $Arguments += " -DANDROID_PLATFORM=android-29"
+        $NDK = $env:ANDROID_NDK_HOME
+        $NdkToolchainFile = "$NDK/build/cmake/android.toolchain.cmake"
+        $Arguments += " -DANDROID_NDK=""$NDK"""
+        $Arguments += " -DCMAKE_TOOLCHAIN_FILE=""$NdkToolchainFile"""
+    }
+    $Arguments += " -DQUIC_LIBRARY_NAME=$LibraryName"
     $Arguments += " ../../.."
 
     CMake-Execute $Arguments
-
-    if ($PGO -and $Config -eq "Release") {
-        # Manually edit project file, since CMake doesn't seem to have a way to do it.
-        $FindText = "  <PropertyGroup Label=`"UserMacros`" />"
-        $ReplaceText = "  <PropertyGroup Label=`"UserMacros`" />`r`n  <PropertyGroup><LibraryPath>`$(LibraryPath);`$(VC_LibraryPath_VC_$($Arch)_Desktop)</LibraryPath></PropertyGroup>"
-        $ProjectFile = Join-Path $BuildDir "src\bin\msquic.vcxproj"
-        (Get-Content $ProjectFile) -replace $FindText, $ReplaceText | Out-File $ProjectFile
-    }
 }
+
 
 # Uses cmake to generate the build configuration files.
 function CMake-Build {
@@ -398,13 +431,13 @@ function CMake-Build {
     CMake-Execute $Arguments
 
     if ($IsWindows) {
-        Copy-Item (Join-Path $BuildDir "obj" $Config "msquic.lib") $ArtifactsDir
+        Copy-Item (Join-Path $BuildDir "obj" $Config "$LibraryName.lib") $ArtifactsDir
         if ($SanitizeAddress -or ($PGO -and $Config -eq "Release")) {
-            Install-Module VSSetup -Scope CurrentUser -Force -SkipPublisherCheck
-            $VSInstallationPath = Get-VSSetupInstance | Select-VSSetupInstance -Latest -Require Microsoft.VisualStudio.Component.VC.Tools.x86.x64 | Select-Object -ExpandProperty InstallationPath
-            $VCToolVersion = Get-Content -Path "$VSInstallationPath\VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt"
-            $VCToolsPath = "$VSInstallationPath\VC\Tools\MSVC\$VCToolVersion\bin\Host$Arch\$Arch"
-            if (Test-Path $VCToolsPath) {
+            $CacheFile = Join-Path $BuildDir "CMakeCache.txt"
+            $LinkerMatches = Select-String -Path $CacheFile -Pattern "CMAKE_LINKER:FILEPATH=(.+)"
+            if ($LinkerMatches.Matches.Length -eq 1 -and $LinkerMatches.Matches[0].Groups.Count -eq 2) {
+                $Linker = $LinkerMatches.Matches[0].Groups[1].Value
+                $VCToolsPath = Split-Path -Path $Linker -Parent
                 if ($PGO) {
                     Copy-Item (Join-Path $VCToolsPath "pgort140.dll") $ArtifactsDir
                     Copy-Item (Join-Path $VCToolsPath "pgodb140.dll") $ArtifactsDir
@@ -418,6 +451,15 @@ function CMake-Build {
                 }
             } else {
                 Log "Failed to find VC Tools path!"
+            }
+        }
+    }
+    # Package debug symbols on macos
+    if ($Platform -eq "macos") {
+        $BuiltArtifacts = Get-ChildItem $ArtifactsDir -File
+        foreach ($Artifact in $BuiltArtifacts) {
+            if (Test-Path $Artifact) {
+                dsymutil $Artifact
             }
         }
     }

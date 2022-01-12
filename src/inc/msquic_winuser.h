@@ -24,7 +24,7 @@ Environment:
 #endif
 
 #include <windows.h>
-#include <ws2def.h>
+#include <winsock2.h>
 #include <ws2ipdef.h>
 #pragma warning(push)
 #pragma warning(disable:6385) // Invalid data: accessing [buffer-name], the readable size is size1 bytes but size2 bytes may be read
@@ -96,6 +96,7 @@ Environment:
 #define QUIC_STATUS_HANDSHAKE_FAILURE       ERROR_QUIC_HANDSHAKE_FAILURE                    // 0x80410000
 #define QUIC_STATUS_ABORTED                 E_ABORT                                         // 0x80004004
 #define QUIC_STATUS_ADDRESS_IN_USE          HRESULT_FROM_WIN32(WSAEADDRINUSE)               // 0x80072740
+#define QUIC_STATUS_INVALID_ADDRESS         HRESULT_FROM_WIN32(WSAEADDRNOTAVAIL)            // 0x80072741
 #define QUIC_STATUS_CONNECTION_TIMEOUT      ERROR_QUIC_CONNECTION_TIMEOUT                   // 0x80410006
 #define QUIC_STATUS_CONNECTION_IDLE         ERROR_QUIC_CONNECTION_IDLE                      // 0x80410005
 #define QUIC_STATUS_UNREACHABLE             HRESULT_FROM_WIN32(ERROR_HOST_UNREACHABLE)      // 0x800704d0
@@ -116,6 +117,7 @@ Environment:
 #define QUIC_STATUS_REVOKED_CERTIFICATE     QUIC_STATUS_TLS_ALERT(44)   // Revoked Certificate
 #define QUIC_STATUS_EXPIRED_CERTIFICATE     QUIC_STATUS_TLS_ALERT(45)   // Expired Certificate
 #define QUIC_STATUS_UNKNOWN_CERTIFICATE     QUIC_STATUS_TLS_ALERT(46)   // Unknown Certificate
+#define QUIC_STATUS_REQUIRED_CERTIFICATE    QUIC_STATUS_TLS_ALERT(116)  // Required Certificate
 
 #define QUIC_STATUS_CERT_EXPIRED            CERT_E_EXPIRED
 #define QUIC_STATUS_CERT_UNTRUSTED_ROOT     CERT_E_UNTRUSTEDROOT
@@ -297,7 +299,13 @@ QuicAddrHash(
 
 #define QUIC_LOCALHOST_FOR_AF(Af) "localhost"
 
+//
+// Rtl String API's are not allowed in gamecore
+//
+#if WINAPI_FAMILY != WINAPI_FAMILY_GAMES
+
 inline
+_Success_(return != FALSE)
 BOOLEAN
 QuicAddrFromString(
     _In_z_ const char* AddrStr,
@@ -305,13 +313,15 @@ QuicAddrFromString(
     _Out_ QUIC_ADDR* Addr
     )
 {
-    Addr->Ipv4.sin_port = QuicNetByteSwapShort(Port);
     if (RtlIpv4StringToAddressExA(AddrStr, FALSE, &Addr->Ipv4.sin_addr, &Addr->Ipv4.sin_port) == NO_ERROR) {
         Addr->si_family = QUIC_ADDRESS_FAMILY_INET;
     } else if (RtlIpv6StringToAddressExA(AddrStr, &Addr->Ipv6.sin6_addr, &Addr->Ipv6.sin6_scope_id, &Addr->Ipv6.sin6_port) == NO_ERROR) {
         Addr->si_family = QUIC_ADDRESS_FAMILY_INET6;
     } else {
         return FALSE;
+    }
+    if (Addr->Ipv4.sin_port == 0) {
+        Addr->Ipv4.sin_port = QuicNetByteSwapShort(Port);
     }
     return TRUE;
 }
@@ -324,6 +334,7 @@ typedef struct QUIC_ADDR_STR {
 } QUIC_ADDR_STR;
 
 inline
+_Success_(return != FALSE)
 BOOLEAN
 QuicAddrToString(
     _In_ const QUIC_ADDR* Addr,
@@ -350,5 +361,7 @@ QuicAddrToString(
     }
     return Status == NO_ERROR;
 }
+
+#endif // WINAPI_FAMILY != WINAPI_FAMILY_GAMES
 
 #endif // _MSQUIC_WINUSER_

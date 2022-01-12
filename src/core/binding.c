@@ -30,25 +30,18 @@ Abstract:
     (ARRAYSIZE(QuicSupportedVersionList) * sizeof(uint32_t)) \
 )
 CXPLAT_STATIC_ASSERT(
-    QUIC_DEFAULT_PATH_MTU - 48 >= MAX_VER_NEG_PACKET_LENGTH,
+    QUIC_DPLPMUTD_MIN_MTU - 48 >= MAX_VER_NEG_PACKET_LENGTH,
     "Too many supported version numbers! Requires too big of buffer for response!");
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 QUIC_STATUS
 QuicBindingInitialize(
-#ifdef QUIC_COMPARTMENT_ID
-    _In_ QUIC_COMPARTMENT_ID CompartmentId,
-#endif
-    _In_ BOOLEAN ShareBinding,
-    _In_ BOOLEAN ServerOwned,
-    _In_opt_ const QUIC_ADDR* LocalAddress,
-    _In_opt_ const QUIC_ADDR* RemoteAddress,
+    _In_ const CXPLAT_UDP_CONFIG* UdpConfig,
     _Out_ QUIC_BINDING** NewBinding
     )
 {
     QUIC_STATUS Status;
     QUIC_BINDING* Binding;
-    uint8_t HashSalt[20];
     BOOLEAN HashTableInitialized = FALSE;
 
     Binding = CXPLAT_ALLOC_NONPAGED(sizeof(QUIC_BINDING), QUIC_POOL_BINDING);
@@ -62,14 +55,12 @@ QuicBindingInitialize(
         goto Error;
     }
 
-    Binding->RefCount = 1;
-    Binding->Exclusive = !ShareBinding;
-    Binding->ServerOwned = ServerOwned;
-    Binding->Connected = RemoteAddress == NULL ? FALSE : TRUE;
+    Binding->RefCount = 0; // No refs until it's added to the library's list
+    Binding->Exclusive = !(UdpConfig->Flags & CXPLAT_SOCKET_FLAG_SHARE);
+    Binding->ServerOwned = !!(UdpConfig->Flags & CXPLAT_SOCKET_SERVER_OWNED);
+    Binding->Connected = UdpConfig->RemoteAddress == NULL ? FALSE : TRUE;
     Binding->StatelessOperCount = 0;
-    Binding->ResetTokenHash = NULL;
     CxPlatDispatchRwLockInitialize(&Binding->RwLock);
-    CxPlatDispatchLockInitialize(&Binding->ResetTokenLock);
     CxPlatDispatchLockInitialize(&Binding->StatelessOperLock);
     CxPlatListInitializeHead(&Binding->Listeners);
     QuicLookupInitialize(&Binding->Lookup);
@@ -88,30 +79,13 @@ QuicBindingInitialize(
         (Binding->RandomReservedVersion & ~QUIC_VERSION_RESERVED_MASK) |
         QUIC_VERSION_RESERVED;
 
-    CxPlatRandom(sizeof(HashSalt), HashSalt);
-    Status =
-        CxPlatHashCreate(
-            CXPLAT_HASH_SHA256,
-            HashSalt,
-            sizeof(HashSalt),
-            &Binding->ResetTokenHash);
-    if (QUIC_FAILED(Status)) {
-        QuicTraceEvent(
-            BindingErrorStatus,
-            "[bind][%p] ERROR, %u, %s.",
-            Binding,
-            Status,
-            "Create reset token hash");
-        goto Error;
-    }
-
 #ifdef QUIC_COMPARTMENT_ID
-    Binding->CompartmentId = CompartmentId;
+    Binding->CompartmentId = UdpConfig->CompartmentId;
 
     BOOLEAN RevertCompartmentId = FALSE;
     QUIC_COMPARTMENT_ID PrevCompartmentId = QuicCompartmentIdGetCurrent();
-    if (PrevCompartmentId != CompartmentId) {
-        Status = QuicCompartmentIdSetCurrent(CompartmentId);
+    if (PrevCompartmentId != UdpConfig->CompartmentId) {
+        Status = QuicCompartmentIdSetCurrent(UdpConfig->CompartmentId);
         if (QUIC_FAILED(Status)) {
             QuicTraceEvent(
                 BindingErrorStatus,
@@ -125,14 +99,43 @@ QuicBindingInitialize(
     }
 #endif
 
-    Status =
-        CxPlatSocketCreateUdp(
-            MsQuicLib.Datapath,
-            LocalAddress,
-            RemoteAddress,
-            Binding,
-            0,
-            &Binding->Socket);
+#if QUIC_TEST_DATAPATH_HOOKS_ENABLED
+    QUIC_TEST_DATAPATH_HOOKS* Hooks = MsQuicLib.TestDatapathHooks;
+    CXPLAT_UDP_CONFIG HookUdpConfig = *UdpConfig;
+    if (Hooks != NULL) {
+        QUIC_ADDR RemoteAddressCopy;
+        if (UdpConfig->RemoteAddress != NULL) {
+            RemoteAddressCopy = *UdpConfig->RemoteAddress;
+        }
+        QUIC_ADDR LocalAddressCopy;
+        if (UdpConfig->LocalAddress != NULL) {
+            LocalAddressCopy = *UdpConfig->LocalAddress;
+        }
+        Hooks->Create(
+            UdpConfig->RemoteAddress != NULL ? &RemoteAddressCopy : NULL,
+            UdpConfig->LocalAddress != NULL ? &LocalAddressCopy : NULL);
+
+        HookUdpConfig.LocalAddress = (UdpConfig->LocalAddress != NULL) ? &LocalAddressCopy : NULL;
+        HookUdpConfig.RemoteAddress = (UdpConfig->RemoteAddress != NULL) ? &RemoteAddressCopy : NULL;
+        HookUdpConfig.CallbackContext = Binding;
+
+        Status =
+            CxPlatSocketCreateUdp(
+                MsQuicLib.Datapath,
+                &HookUdpConfig,
+                &Binding->Socket);
+    } else {
+#endif
+        ((CXPLAT_UDP_CONFIG*)UdpConfig)->CallbackContext = Binding;
+
+        Status =
+            CxPlatSocketCreateUdp(
+                MsQuicLib.Datapath,
+                UdpConfig,
+                &Binding->Socket);
+#if QUIC_TEST_DATAPATH_HOOKS_ENABLED
+    }
+#endif
 
 #ifdef QUIC_COMPARTMENT_ID
     if (RevertCompartmentId) {
@@ -151,15 +154,15 @@ QuicBindingInitialize(
     }
 
     QUIC_ADDR DatapathLocalAddr, DatapathRemoteAddr;
-    CxPlatSocketGetLocalAddress(Binding->Socket, &DatapathLocalAddr);
-    CxPlatSocketGetRemoteAddress(Binding->Socket, &DatapathRemoteAddr);
+    QuicBindingGetLocalAddress(Binding, &DatapathLocalAddr);
+    QuicBindingGetRemoteAddress(Binding, &DatapathRemoteAddr);
     QuicTraceEvent(
         BindingCreated,
         "[bind][%p] Created, Udp=%p LocalAddr=%!ADDR! RemoteAddr=%!ADDR!",
         Binding,
         Binding->Socket,
-        CLOG_BYTEARRAY(sizeof(DatapathLocalAddr), &DatapathLocalAddr),
-        CLOG_BYTEARRAY(sizeof(DatapathRemoteAddr), &DatapathRemoteAddr));
+        CASTED_CLOG_BYTEARRAY(sizeof(DatapathLocalAddr), &DatapathLocalAddr),
+        CASTED_CLOG_BYTEARRAY(sizeof(DatapathRemoteAddr), &DatapathRemoteAddr));
 
     *NewBinding = Binding;
     Status = QUIC_STATUS_SUCCESS;
@@ -168,13 +171,11 @@ Error:
 
     if (QUIC_FAILED(Status)) {
         if (Binding != NULL) {
-            CxPlatHashFree(Binding->ResetTokenHash);
             QuicLookupUninitialize(&Binding->Lookup);
             if (HashTableInitialized) {
                 CxPlatHashtableUninitialize(&Binding->StatelessOperTable);
             }
             CxPlatDispatchLockUninitialize(&Binding->StatelessOperLock);
-            CxPlatDispatchLockUninitialize(&Binding->ResetTokenLock);
             CxPlatDispatchRwLockUninitialize(&Binding->RwLock);
             CXPLAT_FREE(Binding, QUIC_POOL_BINDING);
         }
@@ -225,11 +226,9 @@ QuicBindingUninitialize(
     CXPLAT_DBG_ASSERT(Binding->StatelessOperCount == 0);
     CXPLAT_DBG_ASSERT(Binding->StatelessOperTable.NumEntries == 0);
 
-    CxPlatHashFree(Binding->ResetTokenHash);
     QuicLookupUninitialize(&Binding->Lookup);
     CxPlatDispatchLockUninitialize(&Binding->StatelessOperLock);
     CxPlatHashtableUninitialize(&Binding->StatelessOperTable);
-    CxPlatDispatchLockUninitialize(&Binding->ResetTokenLock);
     CxPlatDispatchRwLockUninitialize(&Binding->RwLock);
 
     QuicTraceEvent(
@@ -248,15 +247,15 @@ QuicBindingTraceRundown(
     // TODO - Trace datapath binding
 
     QUIC_ADDR DatapathLocalAddr, DatapathRemoteAddr;
-    CxPlatSocketGetLocalAddress(Binding->Socket, &DatapathLocalAddr);
-    CxPlatSocketGetRemoteAddress(Binding->Socket, &DatapathRemoteAddr);
+    QuicBindingGetLocalAddress(Binding, &DatapathLocalAddr);
+    QuicBindingGetRemoteAddress(Binding, &DatapathRemoteAddr);
     QuicTraceEvent(
         BindingRundown,
         "[bind][%p] Rundown, Udp=%p LocalAddr=%!ADDR! RemoteAddr=%!ADDR!",
         Binding,
         Binding->Socket,
-        CLOG_BYTEARRAY(sizeof(DatapathLocalAddr), &DatapathLocalAddr),
-        CLOG_BYTEARRAY(sizeof(DatapathRemoteAddr), &DatapathRemoteAddr));
+        CASTED_CLOG_BYTEARRAY(sizeof(DatapathLocalAddr), &DatapathLocalAddr),
+        CASTED_CLOG_BYTEARRAY(sizeof(DatapathRemoteAddr), &DatapathRemoteAddr));
 
     CxPlatDispatchRwLockAcquireShared(&Binding->RwLock);
 
@@ -268,6 +267,38 @@ QuicBindingTraceRundown(
     }
 
     CxPlatDispatchRwLockReleaseShared(&Binding->RwLock);
+}
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicBindingGetLocalAddress(
+    _In_ QUIC_BINDING* Binding,
+    _Out_ QUIC_ADDR* Address
+    )
+{
+    CxPlatSocketGetLocalAddress(Binding->Socket, Address);
+#if QUIC_TEST_DATAPATH_HOOKS_ENABLED
+    QUIC_TEST_DATAPATH_HOOKS* Hooks = MsQuicLib.TestDatapathHooks;
+    if (Hooks != NULL) {
+        Hooks->GetLocalAddress(Address);
+    }
+#endif
+}
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+void
+QuicBindingGetRemoteAddress(
+    _In_ QUIC_BINDING* Binding,
+    _Out_ QUIC_ADDR* Address
+    )
+{
+    CxPlatSocketGetRemoteAddress(Binding->Socket, Address);
+#if QUIC_TEST_DATAPATH_HOOKS_ENABLED
+    QUIC_TEST_DATAPATH_HOOKS* Hooks = MsQuicLib.TestDatapathHooks;
+    if (Hooks != NULL) {
+        Hooks->GetRemoteAddress(Address);
+    }
+#endif
 }
 
 //
@@ -436,13 +467,13 @@ Done:
             ConnNoListenerIp,
             "[conn][%p] No Listener for IP address: %!ADDR!",
             Connection,
-            CLOG_BYTEARRAY(sizeof(*Addr), Addr));
+            CASTED_CLOG_BYTEARRAY(sizeof(*Addr), Addr));
     } else if (FailedAlpnMatch) {
         QuicTraceEvent(
             ConnNoListenerAlpn,
             "[conn][%p] No listener matching ALPN: %!ALPN!",
             Connection,
-            CLOG_BYTEARRAY(Info->ClientAlpnListLength, Info->ClientAlpnList));
+            CASTED_CLOG_BYTEARRAY(Info->ClientAlpnListLength, Info->ClientAlpnList));
         QuicPerfCounterIncrement(QUIC_PERF_COUNTER_CONN_NO_ALPN);
     }
 
@@ -594,11 +625,15 @@ QuicBindingCreateStatelessOperation(
     )
 {
     uint32_t TimeMs = CxPlatTimeMs32();
-    const QUIC_ADDR* RemoteAddress = &Datagram->Tuple->RemoteAddress;
+    const QUIC_ADDR* RemoteAddress = &Datagram->Route->RemoteAddress;
     uint32_t Hash = QuicAddrHash(RemoteAddress);
     QUIC_STATELESS_CONTEXT* StatelessCtx = NULL;
 
     CxPlatDispatchLockAcquire(&Binding->StatelessOperLock);
+
+    if (Binding->RefCount == 0) {
+        goto Exit;
+    }
 
     //
     // Age out all expired operation contexts.
@@ -611,7 +646,7 @@ QuicBindingCreateStatelessOperation(
                 ListEntry);
 
         if (CxPlatTimeDiff32(OldStatelessCtx->CreationTimeMs, TimeMs) <
-            QUIC_STATELESS_OPERATION_EXPIRATION_MS) {
+            (uint32_t)MsQuicLib.Settings.StatelessOperationExpirationMs) {
             break;
         }
 
@@ -636,7 +671,7 @@ QuicBindingCreateStatelessOperation(
         }
     }
 
-    if (Binding->StatelessOperCount >= QUIC_MAX_BINDING_STATELESS_OPERATIONS) {
+    if (Binding->StatelessOperCount >= (uint32_t)MsQuicLib.Settings.MaxBindingStatelessOperations) {
         QuicPacketLogDrop(Binding, CxPlatDataPathRecvDataToRecvPacket(Datagram),
             "Max binding operations reached");
         goto Exit;
@@ -778,7 +813,8 @@ QuicBindingProcessStatelessOperation(
         CxPlatSendDataAlloc(
             Binding->Socket,
             CXPLAT_ECN_NON_ECT,
-            0);
+            0,
+            RecvDatagram->Route);
     if (SendData == NULL) {
         QuicTraceEvent(
             AllocFailure,
@@ -893,7 +929,10 @@ QuicBindingProcessStatelessOperation(
             PacketLength = (uint8_t)RecvPacket->BufferLength - 1;
         }
 
-        CXPLAT_DBG_ASSERT(PacketLength >= QUIC_MIN_STATELESS_RESET_PACKET_LENGTH);
+        if (PacketLength < QUIC_MIN_STATELESS_RESET_PACKET_LENGTH) {
+            CXPLAT_DBG_ASSERT(FALSE);
+            goto Exit;
+        }
 
         SendDatagram =
             CxPlatSendDataAllocBuffer(SendData, PacketLength);
@@ -916,8 +955,7 @@ QuicBindingProcessStatelessOperation(
         ResetPacket->IsLongHeader = FALSE;
         ResetPacket->FixedBit = 1;
         ResetPacket->KeyPhase = RecvPacket->SH->KeyPhase;
-        QuicBindingGenerateStatelessResetToken(
-            Binding,
+        QuicLibraryGenerateStatelessResetToken(
             RecvPacket->DestCid,
             SendDatagram->Buffer + PacketLength - QUIC_STATELESS_RESET_TOKEN_LENGTH);
 
@@ -928,6 +966,8 @@ QuicBindingProcessStatelessOperation(
                 SendDatagram->Buffer + PacketLength - QUIC_STATELESS_RESET_TOKEN_LENGTH,
                 QUIC_STATELESS_RESET_TOKEN_LENGTH
             ).Buffer);
+
+        QuicPerfCounterIncrement(QUIC_PERF_COUNTER_SEND_STATELESS_RESET);
 
     } else if (OperationType == QUIC_OPER_TYPE_RETRY) {
 
@@ -953,7 +993,7 @@ QuicBindingProcessStatelessOperation(
         QUIC_RETRY_TOKEN_CONTENTS Token = { 0 };
         Token.Authenticated.Timestamp = CxPlatTimeEpochMs64();
 
-        Token.Encrypted.RemoteAddress = RecvDatagram->Tuple->RemoteAddress;
+        Token.Encrypted.RemoteAddress = RecvDatagram->Route->RemoteAddress;
         CxPlatCopyMemory(Token.Encrypted.OrigConnId, RecvPacket->DestCid, RecvPacket->DestCidLen);
         Token.Encrypted.OrigConnIdLength = RecvPacket->DestCidLen;
 
@@ -1012,6 +1052,8 @@ QuicBindingProcessStatelessOperation(
             QuicCidBufToStr(RecvPacket->DestCid, RecvPacket->DestCidLen).Buffer,
             (uint16_t)sizeof(Token));
 
+        QuicPerfCounterIncrement(QUIC_PERF_COUNTER_SEND_STATELESS_RETRY);
+
     } else {
         CXPLAT_TEL_ASSERT(FALSE); // Should be unreachable code.
         goto Exit;
@@ -1019,8 +1061,7 @@ QuicBindingProcessStatelessOperation(
 
     QuicBindingSend(
         Binding,
-        &RecvDatagram->Tuple->LocalAddress,
-        &RecvDatagram->Tuple->RemoteAddress,
+        RecvDatagram->Route,
         SendData,
         SendDatagram->Length,
         1,
@@ -1107,7 +1148,7 @@ QuicBindingPreprocessDatagram(
     )
 {
     CXPLAT_RECV_PACKET* Packet = CxPlatDataPathRecvDataToRecvPacket(Datagram);
-    CxPlatZeroMemory(Packet, sizeof(CXPLAT_RECV_PACKET));
+    CxPlatZeroMemory(&Packet->PacketNumber, sizeof(CXPLAT_RECV_PACKET) - sizeof(uint64_t));
     Packet->Buffer = Datagram->Buffer;
     Packet->BufferLength = Datagram->BufferLength;
 
@@ -1171,45 +1212,6 @@ QuicBindingPreprocessDatagram(
 }
 
 //
-// Returns TRUE if the retry token was successfully decrypted and validated.
-//
-_IRQL_requires_max_(DISPATCH_LEVEL)
-BOOLEAN
-QuicBindingValidateRetryToken(
-    _In_ const QUIC_BINDING* const Binding,
-    _In_ const CXPLAT_RECV_PACKET* const Packet,
-    _In_ uint16_t TokenLength,
-    _In_reads_(TokenLength)
-        const uint8_t* TokenBuffer
-    )
-{
-    if (TokenLength != sizeof(QUIC_RETRY_TOKEN_CONTENTS)) {
-        QuicPacketLogDrop(Binding, Packet, "Invalid Retry Token Length");
-        return FALSE;
-    }
-
-    QUIC_RETRY_TOKEN_CONTENTS Token;
-    if (!QuicRetryTokenDecrypt(Packet, TokenBuffer, &Token)) {
-        QuicPacketLogDrop(Binding, Packet, "Retry Token Decryption Failure");
-        return FALSE;
-    }
-
-    if (Token.Encrypted.OrigConnIdLength > sizeof(Token.Encrypted.OrigConnId)) {
-        QuicPacketLogDrop(Binding, Packet, "Invalid Retry Token OrigConnId Length");
-        return FALSE;
-    }
-
-    const CXPLAT_RECV_DATA* Datagram =
-        CxPlatDataPathRecvPacketToRecvData(Packet);
-    if (!QuicAddrCompare(&Token.Encrypted.RemoteAddress, &Datagram->Tuple->RemoteAddress)) {
-        QuicPacketLogDrop(Binding, Packet, "Retry Token Addr Mismatch");
-        return FALSE;
-    }
-
-    return TRUE;
-}
-
-//
 // Returns TRUE if we should respond to the connection attempt with a Retry
 // packet.
 //
@@ -1236,7 +1238,7 @@ QuicBindingShouldRetryConnection(
         //
         // Must always validate the token when provided by the client.
         //
-        if (QuicBindingValidateRetryToken(Binding, Packet, TokenLength, Token)) {
+        if (QuicPacketValidateRetryToken(Binding, Packet, TokenLength, Token)) {
             Packet->ValidToken = TRUE;
         } else {
             *DropPacket = TRUE;
@@ -1276,11 +1278,13 @@ QuicBindingCreateConnection(
     }
 
     QUIC_CONNECTION* Connection = NULL;
-    QUIC_CONNECTION* NewConnection =
+    QUIC_CONNECTION* NewConnection;
+    QUIC_STATUS Status =
         QuicConnAlloc(
             MsQuicLib.StatelessRegistration,
-            Datagram);
-    if (NewConnection == NULL) {
+            Datagram,
+            &NewConnection);
+    if (QUIC_FAILED(Status)) {
         QuicPacketLogDrop(Binding, Packet, "Failed to initialize new connection");
         return NULL;
     }
@@ -1316,7 +1320,7 @@ QuicBindingCreateConnection(
     if (!QuicLookupAddRemoteHash(
             &Binding->Lookup,
             NewConnection,
-            &Datagram->Tuple->RemoteAddress,
+            &Datagram->Route->RemoteAddress,
             Packet->SourceCidLen,
             Packet->SourceCid,
             &Connection)) {
@@ -1353,6 +1357,7 @@ Exit:
             Oper->API_CALL.Context->Type = QUIC_API_TYPE_CONN_SHUTDOWN;
             Oper->API_CALL.Context->CONN_SHUTDOWN.Flags = QUIC_CONNECTION_SHUTDOWN_FLAG_SILENT;
             Oper->API_CALL.Context->CONN_SHUTDOWN.ErrorCode = 0;
+            Oper->API_CALL.Context->CONN_SHUTDOWN.RegistrationShutdown = FALSE;
             QuicConnQueueOper(NewConnection, Oper);
         }
 #pragma warning(pop)
@@ -1396,7 +1401,6 @@ QuicBindingDeliverDatagrams(
     // For long header packets for server owned bindings, the packet's DestCid
     // was not necessarily generated locally, so cannot be used for routing.
     // Instead, a hash of the tuple and source connection ID (SourceCid) is
-
     // used.
     //
     // The exact type of lookup table associated with the binding varies on the
@@ -1429,7 +1433,7 @@ QuicBindingDeliverDatagrams(
         Connection =
             QuicLookupFindConnectionByRemoteHash(
                 &Binding->Lookup,
-                &DatagramChain->Tuple->RemoteAddress,
+                &DatagramChain->Route->RemoteAddress,
                 Packet->SourceCidLen,
                 Packet->SourceCid);
     }
@@ -1508,7 +1512,6 @@ QuicBindingDeliverDatagrams(
             return
                 QuicBindingQueueStatelessOperation(
                     Binding, QUIC_OPER_TYPE_RETRY, DatagramChain);
-
         }
 
         if (!DropPacket) {
@@ -1559,6 +1562,9 @@ QuicBindingReceive(
     // connection it was delivered to.
     //
 
+    uint32_t Proc = CxPlatProcCurrentNumber();
+    uint64_t ProcShifted = ((uint64_t)Proc + 1) << 40;
+
     CXPLAT_RECV_DATA* Datagram;
     while ((Datagram = DatagramChain) != NULL) {
         TotalChainLength++;
@@ -1573,8 +1579,16 @@ QuicBindingReceive(
         CXPLAT_RECV_PACKET* Packet =
             CxPlatDataPathRecvDataToRecvPacket(Datagram);
         CxPlatZeroMemory(Packet, sizeof(CXPLAT_RECV_PACKET));
+        Packet->PacketId =
+            ProcShifted | InterlockedIncrement64((int64_t*)&MsQuicLib.PerProc[Proc].ReceivePacketId);
         Packet->Buffer = Datagram->Buffer;
         Packet->BufferLength = Datagram->BufferLength;
+
+        CXPLAT_DBG_ASSERT(Packet->PacketId != 0);
+        QuicTraceEvent(
+            PacketReceive,
+            "[pack][%llu] Received",
+            Packet->PacketId);
 
 #if QUIC_TEST_DATAPATH_HOOKS_ENABLED
         //
@@ -1705,8 +1719,7 @@ _IRQL_requires_max_(DISPATCH_LEVEL)
 QUIC_STATUS
 QuicBindingSend(
     _In_ QUIC_BINDING* Binding,
-    _In_ const QUIC_ADDR* LocalAddress,
-    _In_ const QUIC_ADDR* RemoteAddress,
+    _In_ const CXPLAT_ROUTE* Route,
     _In_ CXPLAT_SEND_DATA* SendData,
     _In_ uint32_t BytesToSend,
     _In_ uint32_t DatagramsToSend,
@@ -1719,12 +1732,12 @@ QuicBindingSend(
     QUIC_TEST_DATAPATH_HOOKS* Hooks = MsQuicLib.TestDatapathHooks;
     if (Hooks != NULL) {
 
-        QUIC_ADDR RemoteAddressCopy = *RemoteAddress;
-        QUIC_ADDR LocalAddressCopy = *LocalAddress;
+        CXPLAT_ROUTE RouteCopy = *Route;
+
         BOOLEAN Drop =
             Hooks->Send(
-                &RemoteAddressCopy,
-                &LocalAddressCopy,
+                &RouteCopy.RemoteAddress,
+                &RouteCopy.LocalAddress,
                 SendData);
 
         if (Drop) {
@@ -1738,8 +1751,7 @@ QuicBindingSend(
             Status =
                 CxPlatSocketSend(
                     Binding->Socket,
-                    &LocalAddressCopy,
-                    &RemoteAddressCopy,
+                    &RouteCopy,
                     SendData,
                     IdealProcessor);
             if (QUIC_FAILED(Status)) {
@@ -1755,8 +1767,7 @@ QuicBindingSend(
         Status =
             CxPlatSocketSend(
                 Binding->Socket,
-                LocalAddress,
-                RemoteAddress,
+                Route,
                 SendData,
                 IdealProcessor);
         if (QUIC_FAILED(Status)) {
@@ -1774,38 +1785,5 @@ QuicBindingSend(
     QuicPerfCounterAdd(QUIC_PERF_COUNTER_UDP_SEND_BYTES, BytesToSend);
     QuicPerfCounterIncrement(QUIC_PERF_COUNTER_UDP_SEND_CALLS);
 
-    return Status;
-}
-
-CXPLAT_STATIC_ASSERT(
-    CXPLAT_HASH_SHA256_SIZE >= QUIC_STATELESS_RESET_TOKEN_LENGTH,
-    "Stateless reset token must be shorter than hash size used");
-
-_IRQL_requires_max_(DISPATCH_LEVEL)
-QUIC_STATUS
-QuicBindingGenerateStatelessResetToken(
-    _In_ QUIC_BINDING* Binding,
-    _In_reads_(MsQuicLib.CidTotalLength)
-        const uint8_t* const CID,
-    _Out_writes_all_(QUIC_STATELESS_RESET_TOKEN_LENGTH)
-        uint8_t* ResetToken
-    )
-{
-    uint8_t HashOutput[CXPLAT_HASH_SHA256_SIZE];
-    CxPlatDispatchLockAcquire(&Binding->ResetTokenLock);
-    QUIC_STATUS Status =
-        CxPlatHashCompute(
-            Binding->ResetTokenHash,
-            CID,
-            MsQuicLib.CidTotalLength,
-            sizeof(HashOutput),
-            HashOutput);
-    CxPlatDispatchLockRelease(&Binding->ResetTokenLock);
-    if (QUIC_SUCCEEDED(Status)) {
-        CxPlatCopyMemory(
-            ResetToken,
-            HashOutput,
-            QUIC_STATELESS_RESET_TOKEN_LENGTH);
-    }
     return Status;
 }

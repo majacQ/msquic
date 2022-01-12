@@ -21,7 +21,7 @@ Future:
 #endif
 
 extern "C" {
-#include <quic_datapath.h>
+#include "quic_datapath.h"
 }
 
 void
@@ -164,13 +164,20 @@ struct DrillSender {
             ServerAddress.Ipv6.sin6_port = NetworkPort;
         }
 
+        CXPLAT_UDP_CONFIG UdpConfig = {0};
+        UdpConfig.LocalAddress = nullptr;
+        UdpConfig.RemoteAddress = &ServerAddress;
+        UdpConfig.Flags = 0;
+        UdpConfig.InterfaceIndex = 0;
+        UdpConfig.CallbackContext = this;
+#ifdef QUIC_OWNING_PROCESS
+        UdpConfig.OwningProcess = QuicProcessGetCurrentProcess();
+#endif
+
         Status =
             CxPlatSocketCreateUdp(
                 Datapath,
-                nullptr,
-                &ServerAddress,
-                this,
-                0,
+                &UdpConfig,
                 &Binding);
         if (QUIC_FAILED(Status)) {
             TEST_FAILURE("Binding failed: 0x%x", Status);
@@ -187,12 +194,13 @@ struct DrillSender {
         CXPLAT_FRE_ASSERT(PacketBuffer->size() <= UINT16_MAX);
         const uint16_t DatagramLength = (uint16_t) PacketBuffer->size();
 
-        QUIC_ADDR LocalAddress;
-        CxPlatSocketGetLocalAddress(Binding, &LocalAddress);
+        CXPLAT_ROUTE Route;
+        CxPlatSocketGetLocalAddress(Binding, &Route.LocalAddress);
+        Route.RemoteAddress = ServerAddress;
 
         CXPLAT_SEND_DATA* SendData =
             CxPlatSendDataAlloc(
-                Binding, CXPLAT_ECN_NON_ECT, DatagramLength);
+                Binding, CXPLAT_ECN_NON_ECT, DatagramLength, &Route);
 
         QUIC_BUFFER* SendBuffer =
             CxPlatSendDataAllocBuffer(SendData, DatagramLength);
@@ -211,8 +219,7 @@ struct DrillSender {
         Status =
             CxPlatSocketSend(
                 Binding,
-                &LocalAddress,
-                &ServerAddress,
+                &Route,
                 SendData,
                 0);
 

@@ -22,6 +22,9 @@ on the provided configuration.
 .PARAMETER TestCertificates
     Generate test certificates. Only supported for Windows test configuration.
 
+.PARAMETER SignCode
+    Generate a code signing certificate for kernel driver tests.
+
 .EXAMPLE
     prepare-machine.ps1 -Configuration Build
 
@@ -32,7 +35,7 @@ on the provided configuration.
 
 param (
     [Parameter(Mandatory = $true)]
-    [ValidateSet("Build", "Test", "Dev")]
+    [ValidateSet("Build", "Test", "Dev", "OneBranch", "OneBranchPackage")]
     [string]$Configuration,
 
     [Parameter(Mandatory = $false)]
@@ -51,7 +54,16 @@ param (
     [switch]$FailOnError,
 
     [Parameter(Mandatory = $false)]
-    [switch]$TestCertificates
+    [switch]$TestCertificates,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$SignCode,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$DuoNic,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$NoCodeCoverage
 )
 
 #Requires -RunAsAdministrator
@@ -64,9 +76,6 @@ $ProgressPreference = 'SilentlyContinue'
 $RootDir = Split-Path $PSScriptRoot -Parent
 $NuGetPath = Join-Path $RootDir "nuget"
 
-# Well-known location for clog packages.
-$ClogVersion = "0.2.0"
-$ClogDownloadUrl = "https://github.com/microsoft/CLOG/releases/download/v$ClogVersion"
 
 $MessagesAtEnd = New-Object Collections.Generic.List[string]
 
@@ -102,39 +111,51 @@ if ($InitSubmodules) {
         Write-Host "Initializing googletest submodule"
         git submodule init submodules/googletest
         git submodule update
-
-        if ($Kernel) {
-            Write-Host "Initializing wil submodule"
-            git submodule init submodules/wil
-            git submodule update
-        }
     }
 }
 
-function Install-ClogTool {
-    param($ToolName)
-    New-Item -Path $NuGetPath -ItemType Directory -Force | Out-Null
-    $NuGetName = "$ToolName.$ClogVersion.nupkg"
-    $NuGetFile = Join-Path $NuGetPath $NuGetName
-    try {
-        if (!(Test-Path $NuGetFile)) {
-            Write-Host "Downloading $ClogDownloadUrl/$NuGetName"
-            Invoke-WebRequest -Uri "$ClogDownloadUrl/$NuGetName" -OutFile $NuGetFile
-        }
-        Write-Host "Installing: $NuGetName"
-        dotnet tool update --global --add-source $NuGetPath $ToolName
-    } catch {
-        if ($FailOnError) {
-            Write-Error $_
-        }
-        $err = $_
-        $MessagesAtEnd.Add("$ToolName could not be installed. Building with logs will not work")
-        $MessagesAtEnd.Add($err.ToString())
+Write-Host "Initializing clog submodule"
+git submodule init submodules/clog
+git submodule update
+
+$ArtifactsPath = Join-Path $RootDir "artifacts"
+$CoreNetCiPath = Join-Path $ArtifactsPath "corenet-ci-main"
+$SetupPath = Join-Path $CoreNetCiPath "vm-setup"
+
+function Download-CoreNet-Deps {
+    # Download and extract https://github.com/microsoft/corenet-ci.
+    if (!(Test-Path $ArtifactsPath)) { mkdir $ArtifactsPath }
+    if (!(Test-Path $CoreNetCiPath)) {
+        $ZipPath = Join-Path $ArtifactsPath "corenet-ci.zip"
+        Invoke-WebRequest -Uri "https://github.com/microsoft/corenet-ci/archive/refs/heads/main.zip" -OutFile $ZipPath
+        Expand-Archive -Path $ZipPath -DestinationPath $ArtifactsPath -Force
+        Remove-Item -Path $ZipPath
     }
 }
 
-if (($Configuration -eq "Dev") -or ($Configuration -eq "Build")) {
-    Install-ClogTool "Microsoft.Logging.CLOG"
+# Installs DuoNic from the CoreNet-CI repo.
+function Install-DuoNic {
+    # Check to see if test signing is enabled.
+    $HasTestSigning = $false
+    try { $HasTestSigning = ("$(bcdedit)" | Select-String -Pattern "testsigning\s+Yes").Matches.Success } catch { }
+    if (!$HasTestSigning) { Write-Error "Test Signing Not Enabled!" }
+
+    # Download the CI repo that contains DuoNic.
+    Write-Host "Downloading CoreNet-CI"
+    Download-CoreNet-Deps
+
+    # Install the test root certificate.
+    Write-Host "Installing test root certificate"
+    $RootCertPath = Join-Path $SetupPath "testroot-sha2.cer"
+    if (!(Test-Path $RootCertPath)) { Write-Error "Missing file: $RootCertPath" }
+    certutil.exe -addstore -f "Root" $RootCertPath
+
+    # Install the DuoNic driver.
+    Write-Host "Installing DuoNic driver"
+    $DuoNicPath = Join-Path $SetupPath duonic
+    $DuoNicScript = (Join-Path $DuoNicPath duonic.ps1)
+    if (!(Test-Path $DuoNicScript)) { Write-Error "Missing file: $DuoNicScript" }
+    Invoke-Expression "cmd /c `"pushd $DuoNicPath && pwsh duonic.ps1 -Install`""
 }
 
 if ($IsWindows) {
@@ -164,20 +185,47 @@ if ($IsWindows) {
             Expand-Archive -Path "build\nasm.zip" -DestinationPath $env:Programfiles -Force
             $CurrentSystemPath = [Environment]::GetEnvironmentVariable("PATH", [System.EnvironmentVariableTarget]::Machine)
             $CurrentSystemPath = "$CurrentSystemPath;$NasmPath"
+            $env:PATH = "${env:PATH};$NasmPath"
             [Environment]::SetEnvironmentVariable("PATH", $CurrentSystemPath, [System.EnvironmentVariableTarget]::Machine)
-            Write-Host "##vso[task.setvariable variable=PATH;]${env:PATH};$NasmPath"
+            Write-Host "##vso[task.setvariable variable=PATH;]${env:PATH}"
+            Write-Host "PATH has been updated. You'll need to restart your terminal for this to take affect."
+        }
+
+        $JomVersion = "1_1_3"
+        $JomPath = Join-Path $env:Programfiles "jom_$JomVersion"
+        $JomExe = Join-Path $JomPath "jom.exe"
+        if (!(Test-Path $JomExe)) {
+            New-Item -Path .\build -ItemType Directory -Force
+            try {
+                Invoke-WebRequest -Uri "https://qt.mirror.constant.com/official_releases/jom/jom_$JomVersion.zip" -OutFile "build\jom.zip"
+
+            } catch {
+                Invoke-WebRequest -Uri "https://mirrors.ocf.berkeley.edu/qt/official_releases/jom/jom_$JomVersion.zip" -OutFile "build\jom.zip"
+            }
+            New-Item -Path $JomPath -ItemType Directory -Force
+            Expand-Archive -Path "build\jom.zip" -DestinationPath $JomPath -Force
+            $CurrentSystemPath = [Environment]::GetEnvironmentVariable("PATH", [System.EnvironmentVariableTarget]::Machine)
+            $CurrentSystemPath = "$CurrentSystemPath;$JomPath"
+            $env:PATH = "${env:PATH};$JomPath"
+            [Environment]::SetEnvironmentVariable("PATH", $CurrentSystemPath, [System.EnvironmentVariableTarget]::Machine)
+            Write-Host "##vso[task.setvariable variable=PATH;]${env:PATH}"
             Write-Host "PATH has been updated. You'll need to restart your terminal for this to take affect."
         }
     }
 
-    if (($Configuration -eq "Dev") -or ($Configuration -eq "Test")) {
-        Install-ClogTool "Microsoft.Logging.CLOG2Text.Windows"
-    }
-
     if ($Configuration -eq "Test") {
+        $PfxPassword = ConvertTo-SecureString -String "placeholder" -Force -AsPlainText
+        if ($SignCode -and !(Test-Path c:\CodeSign.pfx)) {
+            $CodeSignCert = New-SelfSignedCertificate -Type Custom -Subject "CN=MsQuicTestCodeSignRoot" -FriendlyName MsQuicTestCodeSignRoot -KeyUsageProperty Sign -KeyUsage DigitalSignature -CertStoreLocation cert:\CurrentUser\My -HashAlgorithm SHA256 -Provider "Microsoft Software Key Storage Provider" -KeyExportPolicy Exportable -NotAfter(Get-Date).AddYears(1) -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3,1.3.6.1.4.1.311.10.3.6","2.5.29.19 = {text}")
+            $CodeSignCertPath = Join-Path $Env:TEMP "CodeSignRoot.cer"
+            Export-Certificate -Type CERT -Cert $CodeSignCert -FilePath $CodeSignCertPath
+            CertUtil.exe -addstore Root $CodeSignCertPath
+            Export-PfxCertificate -Cert $CodeSignCert -Password $PfxPassword -FilePath c:\CodeSign.pfx
+            Remove-Item $CodeSignCertPath
+            Remove-Item $CodeSignCert.PSPath
+        }
         if ($TestCertificates) {
             # Install test certificates on windows
-            $PfxPassword = ConvertTo-SecureString -String "placeholder" -Force -AsPlainText
             $NewRoot = $false
             Write-Host "Searching for MsQuicTestRoot certificate..."
             $RootCert = Get-ChildItem -path Cert:\LocalMachine\Root\* -Recurse | Where-Object {$_.Subject -eq "CN=MsQuicTestRoot"}
@@ -251,7 +299,7 @@ if ($IsWindows) {
             }
         }
         # Install OpenCppCoverage on test machines
-        if (!(Test-Path "C:\Program Files\OpenCppCoverage\OpenCppCoverage.exe")) {
+        if (!$NoCodeCoverage -and !(Test-Path "C:\Program Files\OpenCppCoverage\OpenCppCoverage.exe")) {
             # Download the installer.
             $Installer = $null
             if ([System.Environment]::Is64BitOperatingSystem) {
@@ -270,6 +318,9 @@ if ($IsWindows) {
             # Delete the installer.
             Remove-Item -Path $ExeFile
         }
+        if ($DuoNic) {
+            Install-DuoNic
+        }
     }
 
 } elseif ($IsLinux) {
@@ -280,6 +331,9 @@ if ($IsWindows) {
             sudo apt-get install -y liblttng-ust-dev
             # only used for the codecheck CI run:
             sudo apt-get install -y cppcheck clang-tidy
+            # used for packaging
+            sudo apt-get install -y ruby ruby-dev rpm
+            sudo gem install fpm
         }
         "Test" {
             sudo apt-add-repository ppa:lttng/stable-2.12
@@ -298,8 +352,6 @@ if ($IsWindows) {
             Write-Host "[$(Get-Date)] Setting core dump pattern..."
             sudo sh -c "echo -n '%e.%p.%t.core' > /proc/sys/kernel/core_pattern"
             #sudo cat /proc/sys/kernel/core_pattern
-
-            Install-ClogTool "Microsoft.Logging.CLOG2Text.Lttng"
         }
         "Dev" {
             sudo apt-add-repository ppa:lttng/stable-2.12
@@ -308,9 +360,29 @@ if ($IsWindows) {
             sudo apt-get install -y build-essential
             sudo apt-get install -y liblttng-ust-dev
             sudo apt-get install -y lttng-tools
-
-            Install-ClogTool "Microsoft.Logging.CLOG2Text.Lttng"
         }
+        "OneBranch" {
+            sudo apt-add-repository ppa:lttng/stable-2.12
+            sh -c "wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null"
+            sh -c "echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ bionic main' | sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null"
+            sudo apt-get update
+            sudo apt-get install -y cmake
+            sudo apt-get install -y build-essential
+            sudo apt-get install -y liblttng-ust-dev
+            sudo apt-get install -y lttng-tools
+            sudo apt-get install -y libssl-dev
+        }
+        "OneBranchPackage" {
+            sudo apt-get update
+            # used for packaging
+            sudo apt-get install -y ruby ruby-dev rpm
+            sudo gem install fpm
+        }
+    }
+} elseif ($IsMacOS) {
+    if ($Configuration -eq "Test") {
+        Write-Host "[$(Get-Date)] Setting core dump pattern..."
+        sudo sysctl -w kern.corefile=%N.%P.%H.core
     }
 }
 

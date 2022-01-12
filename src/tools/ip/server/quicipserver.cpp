@@ -15,7 +15,7 @@ TODO:
 --*/
 
 #define QUIC_TEST_APIS 1 // Needed for self signed cert API
-#include <msquichelper.h>
+#include "msquichelper.h"
 
 const QUIC_REGISTRATION_CONFIG RegConfig = { "ip", QUIC_EXECUTION_PROFILE_LOW_LATENCY };
 const QUIC_BUFFER Alpn = { sizeof("ip") - 1, (uint8_t*)"ip" };
@@ -32,7 +32,7 @@ PrintUsage()
     printf("\nquicip runs a public IP lookup server.\n\n");
 
     printf("Usage:\n");
-    printf("  quicipserver.exe -selfsign or -cert_hash:<...> [and -cert_store:<...> | -machine] or (-cert_file:<...> and -key_file:<...>)\n");
+    printf("  quicipserver.exe -selfsign:1 or -cert_hash:<...> [and -cert_store:<...> | -machine] or (-cert_file:<...> and -key_file:<...>)\n");
 }
 
 QUIC_STATUS

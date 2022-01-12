@@ -20,11 +20,112 @@ Supported Platforms:
 
 #pragma once
 
-#include <msquic.h>
+#include "msquic.h"
+#include "msquicp.h"
+#ifdef _KERNEL_MODE
+#include <new.h>
+#else
+#include <new>
+#endif
 
 #ifndef CXPLAT_DBG_ASSERT
 #define CXPLAT_DBG_ASSERT(X) // no-op if not already defined
 #endif
+
+#ifdef CX_PLATFORM_TYPE
+
+//
+// Abstractions for platform specific types/interfaces
+//
+
+struct CxPlatEvent {
+    CXPLAT_EVENT Handle;
+    CxPlatEvent() noexcept { CxPlatEventInitialize(&Handle, FALSE, FALSE); }
+    CxPlatEvent(bool ManualReset) noexcept { CxPlatEventInitialize(&Handle, ManualReset, FALSE); }
+    CxPlatEvent(CXPLAT_EVENT event) noexcept : Handle(event) { }
+    ~CxPlatEvent() noexcept { CxPlatEventUninitialize(Handle); }
+    CXPLAT_EVENT* operator &() noexcept { return &Handle; }
+    operator CXPLAT_EVENT() const noexcept { return Handle; }
+    void Set() { CxPlatEventSet(Handle); }
+    void Reset() { CxPlatEventReset(Handle); }
+    void WaitForever() { CxPlatEventWaitForever(Handle); }
+    bool WaitTimeout(uint32_t TimeoutMs) { return CxPlatEventWaitWithTimeout(Handle, TimeoutMs); }
+};
+
+struct CxPlatLock {
+    CXPLAT_LOCK Handle;
+    CxPlatLock() noexcept { CxPlatLockInitialize(&Handle); }
+    ~CxPlatLock() noexcept { CxPlatLockUninitialize(&Handle); }
+    void Acquire() noexcept { CxPlatLockAcquire(&Handle); }
+    void Release() noexcept { CxPlatLockRelease(&Handle); }
+};
+
+struct CxPlatPool {
+    CXPLAT_POOL Handle;
+    CxPlatPool(uint32_t Size, uint32_t Tag = 0, bool IsPaged = false) noexcept { CxPlatPoolInitialize(IsPaged, Size, Tag, &Handle); }
+    ~CxPlatPool() noexcept { CxPlatPoolUninitialize(&Handle); }
+    void* Alloc() noexcept { return CxPlatPoolAlloc(&Handle); }
+    void Free(void* Ptr) noexcept { CxPlatPoolFree(&Handle, Ptr); }
+};
+
+#ifdef CXPLAT_HASH_MIN_SIZE
+
+struct HashTable {
+    bool Initialized;
+    CXPLAT_HASHTABLE Table;
+    HashTable() noexcept { Initialized = CxPlatHashtableInitializeEx(&Table, CXPLAT_HASH_MIN_SIZE); }
+    ~HashTable() noexcept { if (Initialized) { CxPlatHashtableUninitialize(&Table); } }
+    void Insert(CXPLAT_HASHTABLE_ENTRY* Entry) { CxPlatHashtableInsert(&Table, Entry, Entry->Signature, nullptr); }
+    void Remove(CXPLAT_HASHTABLE_ENTRY* Entry) { CxPlatHashtableRemove(&Table, Entry, nullptr); }
+    CXPLAT_HASHTABLE_ENTRY* Lookup(uint64_t Signature) {
+        CXPLAT_HASHTABLE_LOOKUP_CONTEXT LookupContext;
+        return CxPlatHashtableLookup(&Table, Signature, &LookupContext);
+    }
+    CXPLAT_HASHTABLE_ENTRY* LookupEx(uint64_t Signature, bool (*Equals)(CXPLAT_HASHTABLE_ENTRY* Entry, void* Context), void* Context) {
+        CXPLAT_HASHTABLE_LOOKUP_CONTEXT LookupContext;
+        CXPLAT_HASHTABLE_ENTRY* Entry = CxPlatHashtableLookup(&Table, Signature, &LookupContext);
+        while (Entry != NULL) {
+            if (Equals(Entry, Context)) return Entry;
+            Entry = CxPlatHashtableLookupNext(&Table, &LookupContext);
+        }
+        return NULL;
+    }
+};
+
+#endif // CXPLAT_HASH_MIN_SIZE
+
+#ifdef CXPLAT_FRE_ASSERT
+
+class CxPlatWatchdog {
+    CXPLAT_THREAD WatchdogThread;
+    CxPlatEvent ShutdownEvent {true};
+    uint32_t TimeoutMs;
+    static CXPLAT_THREAD_CALLBACK(WatchdogThreadCallback, Context) {
+        auto This = (CxPlatWatchdog*)Context;
+        if (!This->ShutdownEvent.WaitTimeout(This->TimeoutMs)) {
+            CXPLAT_FRE_ASSERTMSG(FALSE, "Watchdog timeout fired!");
+        }
+        CXPLAT_THREAD_RETURN(0);
+    }
+public:
+    CxPlatWatchdog(uint32_t WatchdogTimeoutMs) : TimeoutMs(WatchdogTimeoutMs) {
+        CXPLAT_THREAD_CONFIG Config;
+        memset(&Config, 0, sizeof(CXPLAT_THREAD_CONFIG));
+        Config.Name = "cxplat_watchdog";
+        Config.Callback = WatchdogThreadCallback;
+        Config.Context = this;
+        CXPLAT_FRE_ASSERT(QUIC_SUCCEEDED(CxPlatThreadCreate(&Config, &WatchdogThread)));
+    }
+    ~CxPlatWatchdog() {
+        ShutdownEvent.Set();
+        CxPlatThreadWait(&WatchdogThread);
+        CxPlatThreadDelete(&WatchdogThread);
+    }
+};
+
+#endif // CXPLAT_FRE_ASSERT
+
+#endif // CX_PLATFORM_TYPE
 
 struct QuicAddr {
     QUIC_ADDR SockAddr;
@@ -292,6 +393,45 @@ public:
     MsQuicSettings& SetDesiredVersionsList(const uint32_t* DesiredVersions, uint32_t Length) {
         DesiredVersionsList = DesiredVersions; DesiredVersionsListLength = Length; IsSet.DesiredVersionsList = TRUE; return *this; }
     MsQuicSettings& SetVersionNegotiationExtEnabled(bool Value) { VersionNegotiationExtEnabled = Value; IsSet.VersionNegotiationExtEnabled = TRUE; return *this; }
+    MsQuicSettings& SetMaximumMtu(uint16_t Mtu) { MaximumMtu = Mtu; IsSet.MaximumMtu = TRUE; return *this; }
+    MsQuicSettings& SetMinimumMtu(uint16_t Mtu) { MinimumMtu = Mtu; IsSet.MinimumMtu = TRUE; return *this; }
+    MsQuicSettings& SetMtuDiscoverySearchCompleteTimeoutUs(uint64_t Time) { MtuDiscoverySearchCompleteTimeoutUs = Time; IsSet.MtuDiscoverySearchCompleteTimeoutUs = TRUE; return *this; }
+    MsQuicSettings& SetMtuDiscoveryMissingProbeCount(uint8_t Count) { MtuDiscoveryMissingProbeCount = Count; IsSet.MtuDiscoveryMissingProbeCount = TRUE; return *this; }
+    MsQuicSettings& SetKeepAlive(uint32_t Time) { KeepAliveIntervalMs = Time; IsSet.KeepAliveIntervalMs = TRUE; return *this; }
+    MsQuicSettings& SetConnFlowControlWindow(uint32_t Window) { ConnFlowControlWindow = Window; IsSet.ConnFlowControlWindow = TRUE; return *this; }
+
+    QUIC_STATUS
+    SetGlobal() const noexcept {
+        const QUIC_SETTINGS* Settings = this;
+        return
+            MsQuic->SetParam(
+                nullptr,
+                QUIC_PARAM_LEVEL_GLOBAL,
+                QUIC_PARAM_GLOBAL_SETTINGS,
+                sizeof(*Settings),
+                Settings);
+    }
+
+    QUIC_STATUS
+    GetGlobal() noexcept {
+        QUIC_SETTINGS* Settings = this;
+        uint32_t Size = sizeof(*Settings);
+        return
+            MsQuic->GetParam(
+                nullptr,
+                QUIC_PARAM_LEVEL_GLOBAL,
+                QUIC_PARAM_GLOBAL_SETTINGS,
+                &Size,
+                Settings);
+    }
+};
+
+class MsQuicCertificateHash : public QUIC_CERTIFICATE_HASH {
+public:
+    MsQuicCertificateHash(_In_reads_(20) const uint8_t* Thumbprint) {
+        QUIC_CERTIFICATE_HASH* thisStruct = this;
+        memcpy(thisStruct->ShaHash, Thumbprint, sizeof(thisStruct->ShaHash));
+    }
 };
 
 #ifndef QUIC_DEFAULT_CLIENT_CRED_FLAGS
@@ -308,6 +448,13 @@ public:
         QUIC_CREDENTIAL_CONFIG* thisStruct = this;
         memset(thisStruct, 0, sizeof(QUIC_CREDENTIAL_CONFIG));
         Flags = _Flags;
+    }
+    MsQuicCredentialConfig(QUIC_CREDENTIAL_FLAGS _Flags, const QUIC_CERTIFICATE_HASH* _CertificateHash) {
+        QUIC_CREDENTIAL_CONFIG* thisStruct = this;
+        memset(thisStruct, 0, sizeof(QUIC_CREDENTIAL_CONFIG));
+        Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH;
+        Flags = _Flags;
+        CertificateHash = (QUIC_CERTIFICATE_HASH*)_CertificateHash;
     }
 };
 
@@ -421,6 +568,17 @@ public:
                 KeyCount * sizeof(QUIC_TICKET_KEY_CONFIG),
                 KeyConfig);
     }
+    QUIC_STATUS
+    SetSettings(_In_ const MsQuicSettings& Settings) noexcept {
+        const QUIC_SETTINGS* QSettings = &Settings;
+        return
+            MsQuic->SetParam(
+                Handle,
+                QUIC_PARAM_LEVEL_CONFIGURATION,
+                QUIC_PARAM_CONFIGURATION_SETTINGS,
+                sizeof(*QSettings),
+                QSettings);
+    }
 };
 
 struct MsQuicListener {
@@ -518,6 +676,17 @@ struct MsQuicConnection {
     MsQuicConnectionCallback* Callback;
     void* Context;
     QUIC_STATUS InitStatus;
+    // TODO - All the rest of this is not always necessary. Move to a separate class.
+    QUIC_STATUS TransportShutdownStatus {0};
+    QUIC_UINT62 AppShutdownErrorCode {0};
+    bool HandshakeComplete {false};
+    bool HandshakeResumed {false};
+    uint32_t ResumptionTicketLength {0};
+    uint8_t* ResumptionTicket {nullptr};
+#ifdef CX_PLATFORM_TYPE
+    CxPlatEvent HandshakeCompleteEvent;
+    CxPlatEvent ResumptionTicketReceivedEvent;
+#endif // CX_PLATFORM_TYPE
 
     MsQuicConnection(
         _In_ const MsQuicRegistration& Registration,
@@ -555,6 +724,7 @@ struct MsQuicConnection {
         if (Handle) {
             MsQuic->ConnectionClose(Handle);
         }
+        delete[] ResumptionTicket;
     }
 
     void
@@ -633,6 +803,121 @@ struct MsQuicConnection {
         return MsQuic->GetParam(Handle, Level, Param, BufferLength, Buffer);
     }
 
+    QUIC_STATUS
+    GetLocalAddr(_Out_ QuicAddr& Addr) {
+        uint32_t Size = sizeof(Addr.SockAddr);
+        return
+            GetParam(
+                QUIC_PARAM_LEVEL_CONNECTION,
+                QUIC_PARAM_CONN_LOCAL_ADDRESS,
+                &Size,
+                &Addr.SockAddr);
+    }
+
+    QUIC_STATUS
+    GetRemoteAddr(_Out_ QuicAddr& Addr) {
+        uint32_t Size = sizeof(Addr.SockAddr);
+        return
+            GetParam(
+                QUIC_PARAM_LEVEL_CONNECTION,
+                QUIC_PARAM_CONN_REMOTE_ADDRESS,
+                &Size,
+                &Addr.SockAddr);
+    }
+
+    QUIC_STATUS
+    SetLocalAddr(_In_ const QuicAddr& Addr) noexcept {
+        return
+            MsQuic->SetParam(
+                Handle,
+                QUIC_PARAM_LEVEL_CONNECTION,
+                QUIC_PARAM_CONN_LOCAL_ADDRESS,
+                sizeof(Addr.SockAddr),
+                &Addr.SockAddr);
+    }
+
+    QUIC_STATUS
+    SetLocalInterface(_In_ uint32_t Index) noexcept {
+        return
+            MsQuic->SetParam(
+                Handle,
+                QUIC_PARAM_LEVEL_CONNECTION,
+                QUIC_PARAM_CONN_LOCAL_INTERFACE,
+                sizeof(Index),
+                &Index);
+    }
+
+    QUIC_STATUS
+    SetShareUdpBinding(_In_ bool ShareBinding = true) noexcept {
+        BOOLEAN Value = ShareBinding ? TRUE : FALSE;
+        return
+            MsQuic->SetParam(
+                Handle,
+                QUIC_PARAM_LEVEL_CONNECTION,
+                QUIC_PARAM_CONN_SHARE_UDP_BINDING,
+                sizeof(Value),
+                &Value);
+    }
+
+    QUIC_STATUS
+    SetResumptionTicket(_In_reads_(TicketLength) const uint8_t* Ticket, uint32_t TicketLength) noexcept {
+        return
+            MsQuic->SetParam(
+                Handle,
+                QUIC_PARAM_LEVEL_CONNECTION,
+                QUIC_PARAM_CONN_RESUMPTION_TICKET,
+                TicketLength,
+                Ticket);
+    }
+
+    QUIC_STATUS
+    SetSettings(_In_ const MsQuicSettings& Settings) noexcept {
+        const QUIC_SETTINGS* QSettings = &Settings;
+        return
+            MsQuic->SetParam(
+                Handle,
+                QUIC_PARAM_LEVEL_CONNECTION,
+                QUIC_PARAM_CONN_SETTINGS,
+                sizeof(*QSettings),
+                QSettings);
+    }
+
+    QUIC_STATUS
+    GetSettings(_Out_ MsQuicSettings* Settings) const noexcept {
+        QUIC_SETTINGS* QSettings = Settings;
+        uint32_t Size = sizeof(*QSettings);
+        return
+            MsQuic->GetParam(
+                Handle,
+                QUIC_PARAM_LEVEL_CONNECTION,
+                QUIC_PARAM_CONN_SETTINGS,
+                &Size,
+                QSettings);
+    }
+
+    QUIC_STATUS
+    GetStatistics(_Out_ QUIC_STATISTICS* Statistics) const noexcept {
+        uint32_t Size = sizeof(*Statistics);
+        return
+            MsQuic->GetParam(
+                Handle,
+                QUIC_PARAM_LEVEL_CONNECTION,
+                QUIC_PARAM_CONN_STATISTICS,
+                &Size,
+                Statistics);
+    }
+
+    QUIC_STATUS
+    SetKeepAlivePadding(_In_ uint16_t Value) noexcept {
+        return
+            MsQuic->SetParam(
+                Handle,
+                QUIC_PARAM_LEVEL_CONNECTION,
+                QUIC_PARAM_CONN_KEEP_ALIVE_PADDING,
+                sizeof(Value),
+                &Value);
+    }
+
     QUIC_STATUS GetInitStatus() const noexcept { return InitStatus; }
     bool IsValid() const { return QUIC_SUCCEEDED(InitStatus); }
     MsQuicConnection(MsQuicConnection& other) = delete;
@@ -650,7 +935,28 @@ struct MsQuicConnection {
         if (Event->Type == QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED) {
             //
             // Not great beacuse it doesn't provide an application specific
-            // error code. If you expect to get streams, you should not be no-op
+            // error code. If you expect to get streams, you should not no-op
+            // the callbacks.
+            //
+            MsQuic->StreamClose(Event->PEER_STREAM_STARTED.Stream);
+        }
+        return QUIC_STATUS_SUCCESS;
+    }
+
+    static
+    QUIC_STATUS
+    QUIC_API
+    SendResumptionCallback(
+        _In_ MsQuicConnection* Connection,
+        _In_opt_ void* /* Context */,
+        _Inout_ QUIC_CONNECTION_EVENT* Event
+        ) noexcept {
+        if (Event->Type == QUIC_CONNECTION_EVENT_CONNECTED) {
+            MsQuic->ConnectionSendResumptionTicket(*Connection, QUIC_SEND_RESUMPTION_FLAG_FINAL, 0, nullptr);
+        } else if (Event->Type == QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED) {
+            //
+            // Not great beacuse it doesn't provide an application specific
+            // error code. If you expect to get streams, you should not no-op
             // the callbacks.
             //
             MsQuic->StreamClose(Event->PEER_STREAM_STARTED.Stream);
@@ -671,6 +977,37 @@ private:
         _Inout_ QUIC_CONNECTION_EVENT* Event
         ) noexcept {
         CXPLAT_DBG_ASSERT(pThis);
+        if (Event->Type == QUIC_CONNECTION_EVENT_CONNECTED) {
+            pThis->HandshakeComplete = true;
+            pThis->HandshakeResumed = Event->CONNECTED.SessionResumed;
+#ifdef CX_PLATFORM_TYPE
+            pThis->HandshakeCompleteEvent.Set();
+#endif // CX_PLATFORM_TYPE
+        } else if (Event->Type == QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT) {
+            pThis->TransportShutdownStatus = Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status;
+#ifdef CX_PLATFORM_TYPE
+            if (!pThis->HandshakeComplete) {
+                pThis->HandshakeCompleteEvent.Set();
+            }
+#endif // CX_PLATFORM_TYPE
+        } else if (Event->Type == QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER) {
+            pThis->AppShutdownErrorCode = Event->SHUTDOWN_INITIATED_BY_PEER.ErrorCode;
+#ifdef CX_PLATFORM_TYPE
+            if (!pThis->HandshakeComplete) {
+                pThis->HandshakeCompleteEvent.Set();
+            }
+#endif // CX_PLATFORM_TYPE
+        } else if (Event->Type == QUIC_CONNECTION_EVENT_RESUMPTION_TICKET_RECEIVED && !pThis->ResumptionTicket) {
+            pThis->ResumptionTicketLength = Event->RESUMPTION_TICKET_RECEIVED.ResumptionTicketLength;
+            pThis->ResumptionTicket = new(std::nothrow) uint8_t[pThis->ResumptionTicketLength];
+            if (pThis->ResumptionTicket) {
+                CXPLAT_DBG_ASSERT(pThis->ResumptionTicketLength != 0);
+                memcpy(pThis->ResumptionTicket, Event->RESUMPTION_TICKET_RECEIVED.ResumptionTicket, pThis->ResumptionTicketLength);
+#ifdef CX_PLATFORM_TYPE
+                pThis->ResumptionTicketReceivedEvent.Set();
+#endif // CX_PLATFORM_TYPE
+            }
+        }
         auto DeleteOnExit =
             Event->Type == QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE &&
             pThis->CleanUpMode == CleanUpAutoDelete;
@@ -686,6 +1023,7 @@ struct MsQuicAutoAcceptListener : public MsQuicListener {
     const MsQuicConfiguration& Configuration;
     MsQuicConnectionCallback* ConnectionHandler;
     void* ConnectionContext;
+    uint32_t AcceptedConnectionCount {0};
 
     MsQuicAutoAcceptListener(
         _In_ const MsQuicRegistration& Registration,
@@ -714,7 +1052,7 @@ private:
         auto pThis = (MsQuicAutoAcceptListener*)Context; CXPLAT_DBG_ASSERT(pThis);
         QUIC_STATUS Status = QUIC_STATUS_INVALID_STATE;
         if (Event->Type == QUIC_LISTENER_EVENT_NEW_CONNECTION) {
-            auto Connection = new MsQuicConnection(Event->NEW_CONNECTION.Connection, CleanUpAutoDelete, pThis->ConnectionHandler, pThis->ConnectionContext);
+            auto Connection = new(std::nothrow) MsQuicConnection(Event->NEW_CONNECTION.Connection, CleanUpAutoDelete, pThis->ConnectionHandler, pThis->ConnectionContext);
             if (Connection) {
                 Status = Connection->SetConfiguration(pThis->Configuration);
                 if (QUIC_FAILED(Status)) {
@@ -723,6 +1061,8 @@ private:
                     //
                     Connection->Handle = nullptr;
                     delete Connection;
+                } else {
+                    InterlockedIncrement((long*)&pThis->AcceptedConnectionCount);
                 }
             }
         }
@@ -833,6 +1173,47 @@ struct MsQuicStream {
         return MsQuic->StreamReceiveSetEnabled(Handle, IsEnabled ? TRUE : FALSE);
     }
 
+    QUIC_STATUS
+    GetID(_Out_ QUIC_UINT62* ID) const noexcept {
+        uint32_t Size = sizeof(*ID);
+        return
+            MsQuic->GetParam(
+                Handle,
+                QUIC_PARAM_LEVEL_STREAM,
+                QUIC_PARAM_STREAM_ID,
+                &Size,
+                ID);
+    }
+
+    QUIC_UINT62 ID() const noexcept {
+        QUIC_UINT62 ID;
+        GetID(&ID);
+        return ID;
+    }
+
+    QUIC_STATUS
+    SetPriority(_In_ uint16_t Priority) noexcept {
+        return
+            MsQuic->SetParam(
+                Handle,
+                QUIC_PARAM_LEVEL_STREAM,
+                QUIC_PARAM_STREAM_PRIORITY,
+                sizeof(Priority),
+                &Priority);
+    }
+
+    QUIC_STATUS
+    GetPriority(_Out_ uint16_t* Priority) const noexcept {
+        uint32_t Size = sizeof(*Priority);
+        return
+            MsQuic->GetParam(
+                Handle,
+                QUIC_PARAM_LEVEL_STREAM,
+                QUIC_PARAM_STREAM_PRIORITY,
+                &Size,
+                Priority);
+    }
+
     QUIC_STATUS GetInitStatus() const noexcept { return InitStatus; }
     bool IsValid() const { return QUIC_SUCCEEDED(InitStatus); }
     MsQuicStream(MsQuicStream& other) = delete;
@@ -901,7 +1282,8 @@ struct ConfigurationScope {
 struct QuicBufferScope {
     QUIC_BUFFER* Buffer;
     QuicBufferScope() noexcept : Buffer(nullptr) { }
-    QuicBufferScope(uint32_t Size) noexcept : Buffer((QUIC_BUFFER*) new uint8_t[sizeof(QUIC_BUFFER) + Size]) {
+    QuicBufferScope(uint32_t Size) noexcept : Buffer((QUIC_BUFFER*) new(std::nothrow) uint8_t[sizeof(QUIC_BUFFER) + Size]) {
+        CXPLAT_DBG_ASSERT(Buffer);
         memset(Buffer, 0, sizeof(*Buffer) + Size);
         Buffer->Length = Size;
         Buffer->Buffer = (uint8_t*)(Buffer + 1);
@@ -909,81 +1291,3 @@ struct QuicBufferScope {
     operator QUIC_BUFFER* () noexcept { return Buffer; }
     ~QuicBufferScope() noexcept { if (Buffer) { delete[](uint8_t*) Buffer; } }
 };
-
-#ifdef CX_PLATFORM_TYPE
-
-//
-// Abstractions for platform specific types/interfaces
-//
-
-struct CxPlatEvent {
-    CXPLAT_EVENT Handle;
-    CxPlatEvent() noexcept { CxPlatEventInitialize(&Handle, FALSE, FALSE); }
-    CxPlatEvent(bool ManualReset) noexcept { CxPlatEventInitialize(&Handle, ManualReset, FALSE); }
-    CxPlatEvent(CXPLAT_EVENT event) noexcept : Handle(event) { }
-    ~CxPlatEvent() noexcept { CxPlatEventUninitialize(Handle); }
-    CXPLAT_EVENT* operator &() noexcept { return &Handle; }
-    operator CXPLAT_EVENT() const noexcept { return Handle; }
-    void Set() { CxPlatEventSet(Handle); }
-    void Reset() { CxPlatEventReset(Handle); }
-    void WaitForever() { CxPlatEventWaitForever(Handle); }
-    bool WaitTimeout(uint32_t TimeoutMs) { return CxPlatEventWaitWithTimeout(Handle, TimeoutMs); }
-};
-
-#ifdef CXPLAT_HASH_MIN_SIZE
-
-struct HashTable {
-    bool Initialized;
-    CXPLAT_HASHTABLE Table;
-    HashTable() noexcept { Initialized = CxPlatHashtableInitializeEx(&Table, CXPLAT_HASH_MIN_SIZE); }
-    ~HashTable() noexcept { if (Initialized) { CxPlatHashtableUninitialize(&Table); } }
-    void Insert(CXPLAT_HASHTABLE_ENTRY* Entry) { CxPlatHashtableInsert(&Table, Entry, Entry->Signature, nullptr); }
-    void Remove(CXPLAT_HASHTABLE_ENTRY* Entry) { CxPlatHashtableRemove(&Table, Entry, nullptr); }
-    CXPLAT_HASHTABLE_ENTRY* Lookup(uint64_t Signature) {
-        CXPLAT_HASHTABLE_LOOKUP_CONTEXT LookupContext;
-        return CxPlatHashtableLookup(&Table, Signature, &LookupContext);
-    }
-    CXPLAT_HASHTABLE_ENTRY* LookupEx(uint64_t Signature, bool (*Equals)(CXPLAT_HASHTABLE_ENTRY* Entry, void* Context), void* Context) {
-        CXPLAT_HASHTABLE_LOOKUP_CONTEXT LookupContext;
-        CXPLAT_HASHTABLE_ENTRY* Entry = CxPlatHashtableLookup(&Table, Signature, &LookupContext);
-        while (Entry != NULL) {
-            if (Equals(Entry, Context)) return Entry;
-            Entry = CxPlatHashtableLookupNext(&Table, &LookupContext);
-        }
-        return NULL;
-    }
-};
-
-#endif // CXPLAT_HASH_MIN_SIZE
-
-#ifdef CXPLAT_FRE_ASSERT
-
-class CxPlatWatchdog {
-    CXPLAT_THREAD WatchdogThread;
-    CxPlatEvent ShutdownEvent {true};
-    uint32_t TimeoutMs;
-    static CXPLAT_THREAD_CALLBACK(WatchdogThreadCallback, Context) {
-        auto This = (CxPlatWatchdog*)Context;
-        if (!This->ShutdownEvent.WaitTimeout(This->TimeoutMs)) {
-            CXPLAT_FRE_ASSERTMSG(FALSE, "Watchdog timeout fired!");
-        }
-        CXPLAT_THREAD_RETURN(0);
-    }
-public:
-    CxPlatWatchdog(uint32_t WatchdogTimeoutMs) : TimeoutMs(WatchdogTimeoutMs) {
-        CXPLAT_THREAD_CONFIG Config = { 0 };
-        Config.Name = "cxplat_watchdog";
-        Config.Callback = WatchdogThreadCallback;
-        Config.Context = this;
-        CXPLAT_FRE_ASSERT(QUIC_SUCCEEDED(CxPlatThreadCreate(&Config, &WatchdogThread)));
-    }
-    ~CxPlatWatchdog() {
-        ShutdownEvent.Set();
-        CxPlatThreadWait(&WatchdogThread);
-        CxPlatThreadDelete(&WatchdogThread);
-    }
-};
-
-#endif // CXPLAT_FRE_ASSERT
-
-#endif // CX_PLATFORM_TYPE

@@ -36,13 +36,27 @@ void QuicTestValidateConnection();
 void QuicTestValidateStream(bool Connect);
 void QuicTestGetPerfCounters();
 void QuicTestDesiredVersionSettings();
+void QuicTestValidateParamApi();
+
+//
+// Ownership tests
+//
+void QuicTestRegistrationShutdownBeforeConnOpen();
+void QuicTestRegistrationShutdownAfterConnOpen();
+void QuicTestRegistrationShutdownAfterConnOpenBeforeStart();
+void QuicTestRegistrationShutdownAfterConnOpenAndStart();
+
+//
+// Rejection Tests
+//
+void QuicTestConnectionRejection(bool RejectByClosing);
 
 //
 // Event Validation Tests
 //
 
-void QuicTestValidateConnectionEvents();
-void QuicTestValidateStreamEvents();
+void QuicTestValidateConnectionEvents(uint32_t Test);
+void QuicTestValidateStreamEvents(uint32_t Test);
 
 //
 // Basic Functionality Tests
@@ -60,6 +74,26 @@ void QuicTestBindConnectionImplicit(_In_ int Family);
 void QuicTestBindConnectionExplicit(_In_ int Family);
 
 //
+// MTU tests
+//
+void QuicTestMtuSettings();
+void
+QuicTestMtuDiscovery(
+    _In_ int Family,
+    _In_ BOOLEAN DropClientProbePackets,
+    _In_ BOOLEAN DropServerProbePackets,
+    _In_ BOOLEAN RaiseMinimumMtu
+    );
+
+//
+// Path tests
+//
+void
+QuicTestLocalPathChanges(
+    _In_ int Family
+    );
+
+//
 // Handshake Tests
 //
 
@@ -69,13 +103,19 @@ typedef enum QUIC_TEST_RESUMPTION_MODE {
     QUIC_TEST_RESUMPTION_REJECTED,
 } QUIC_TEST_RESUMPTION_MODE;
 
+typedef enum QUIC_TEST_ASYNC_CONFIG_MODE {
+    QUIC_TEST_ASYNC_CONFIG_DISABLED,
+    QUIC_TEST_ASYNC_CONFIG_ENABLED,
+    QUIC_TEST_ASYNC_CONFIG_DELAYED,
+} QUIC_TEST_ASYNC_CONFIG_MODE;
+
 void
 QuicTestConnect(
     _In_ int Family,
     _In_ bool ServerStatelessRetry,
     _In_ bool ClientUsesOldVersion,
     _In_ bool MultipleALPNs,
-    _In_ bool AsyncConfiguration,
+    _In_ QUIC_TEST_ASYNC_CONFIG_MODE AsyncConfiguration,
     _In_ bool MultiPacketClientInitial,
     _In_ QUIC_TEST_RESUMPTION_MODE SessionResumption,
     _In_ uint8_t RandomLossPercentage // 0 to 100
@@ -149,6 +189,21 @@ QuicTestInvalidAlpnLengths(
     void
     );
 
+void
+QuicTestLoadBalancedHandshake(
+    _In_ int Family
+    );
+
+void
+QuicTestClientSharedLocalPort(
+    _In_ int Family
+    );
+
+void
+QuicTestInterfaceBinding(
+    _In_ int Family
+    );
+
 //
 // Negative Handshake Tests
 //
@@ -156,6 +211,10 @@ QuicTestInvalidAlpnLengths(
 void
 QuicTestConnectUnreachable(
     _In_ int Family
+    );
+
+void
+QuicTestConnectInvalidAddress(
     );
 
 void
@@ -199,12 +258,14 @@ QuicTestConnectExpiredClientCertificate(
 
 void
 QuicTestNatPortRebind(
-    _In_ int Family
+    _In_ int Family,
+    _In_ uint16_t KeepAlivePaddingSize
     );
 
 void
 QuicTestNatAddrRebind(
-    _In_ int Family
+    _In_ int Family,
+    _In_ uint16_t KeepAlivePaddingSize
     );
 
 void
@@ -357,6 +418,22 @@ QuicTestSlowReceive(
 
 void
 QuicTestNthAllocFail(
+    );
+
+void
+QuicTestStreamPriority(
+    );
+
+void
+QuicTestStreamDifferentAbortErrors(
+    );
+
+void
+QuicTestStreamAbortRecvFinRace(
+    );
+
+void
+QuicTestStreamAbortConnFlowControl(
     );
 
 //
@@ -578,9 +655,11 @@ typedef struct {
 
 #define IOCTL_QUIC_RUN_VALIDATE_CONNECTION_EVENTS \
     QUIC_CTL_CODE(25, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // uint32_t - Test
 
 #define IOCTL_QUIC_RUN_VALIDATE_STREAM_EVENTS \
     QUIC_CTL_CODE(26, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // uint32_t - Test
 
 #define IOCTL_QUIC_RUN_VERSION_NEGOTIATION \
     QUIC_CTL_CODE(27, METHOD_BUFFERED, FILE_WRITE_DATA)
@@ -691,13 +770,18 @@ typedef struct {
     QUIC_CTL_CODE(40, METHOD_BUFFERED, FILE_WRITE_DATA)
     // int - Family
 
+typedef struct {
+    int Family;
+    uint16_t Padding;
+} QUIC_RUN_REBIND_PARAMS;
+
 #define IOCTL_QUIC_RUN_NAT_PORT_REBIND \
     QUIC_CTL_CODE(41, METHOD_BUFFERED, FILE_WRITE_DATA)
-    // int - Family
+    // QUIC_RUN_REBIND_PARAMS
 
 #define IOCTL_QUIC_RUN_NAT_ADDR_REBIND \
     QUIC_CTL_CODE(42, METHOD_BUFFERED, FILE_WRITE_DATA)
-    // int - Family
+    // QUIC_RUN_REBIND_PARAMS
 
 #define IOCTL_QUIC_RUN_CHANGE_MAX_STREAM_ID \
     QUIC_CTL_CODE(43, METHOD_BUFFERED, FILE_WRITE_DATA)
@@ -819,4 +903,68 @@ typedef struct {
 #define IOCTL_QUIC_RUN_NTH_ALLOC_FAIL \
     QUIC_CTL_CODE(66, METHOD_BUFFERED, FILE_WRITE_DATA)
 
-#define QUIC_MAX_IOCTL_FUNC_CODE 66
+#define IOCTL_QUIC_RUN_MTU_SETTINGS \
+    QUIC_CTL_CODE(67, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+typedef struct {
+    int Family;
+    uint8_t DropClientProbePackets;
+    uint8_t DropServerProbePackets;
+    uint8_t RaiseMinimumMtu;
+} QUIC_RUN_MTU_DISCOVERY_PARAMS;
+
+#define IOCTL_QUIC_RUN_MTU_DISCOVERY \
+    QUIC_CTL_CODE(68, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_LOAD_BALANCED_HANDSHAKE \
+    QUIC_CTL_CODE(69, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // int - Family
+
+#define IOCTL_QUIC_RUN_CLIENT_SHARED_LOCAL_PORT \
+    QUIC_CTL_CODE(70, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // int - Family
+
+#define IOCTL_QUIC_RUN_VALIDATE_PARAM_API \
+    QUIC_CTL_CODE(71, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // int - Family
+
+#define IOCTL_QUIC_RUN_STREAM_PRIORITY \
+    QUIC_CTL_CODE(72, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_CLIENT_LOCAL_PATH_CHANGES \
+    QUIC_CTL_CODE(73, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // int - Family
+
+#define IOCTL_QUIC_RUN_STREAM_DIFFERENT_ABORT_ERRORS \
+    QUIC_CTL_CODE(74, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_CONNECTION_REJECTION \
+    QUIC_CTL_CODE(75, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // bool - RejectByClosing
+
+#define IOCTL_QUIC_RUN_INTERFACE_BINDING \
+    QUIC_CTL_CODE(76, METHOD_BUFFERED, FILE_WRITE_DATA)
+    // int - Family
+
+#define IOCTL_QUIC_RUN_CONNECT_INVALID_ADDRESS \
+    QUIC_CTL_CODE(77, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_STREAM_ABORT_RECV_FIN_RACE \
+    QUIC_CTL_CODE(78, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_STREAM_ABORT_CONN_FLOW_CONTROL \
+    QUIC_CTL_CODE(79, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN__REG_SHUTDOWN_BEFORE_OPEN \
+    QUIC_CTL_CODE(80, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_REG_SHUTDOWN_AFTER_OPEN \
+    QUIC_CTL_CODE(81, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_REG_SHUTDOWN_AFTER_OPEN_BEFORE_START \
+    QUIC_CTL_CODE(82, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define IOCTL_QUIC_RUN_REG_SHUTDOWN_AFTER_OPEN_AND_START \
+    QUIC_CTL_CODE(83, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define QUIC_MAX_IOCTL_FUNC_CODE 83

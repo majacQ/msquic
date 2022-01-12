@@ -478,24 +478,10 @@ DummyConnectionCallback(
 }
 
 #ifndef QUIC_DISABLE_0RTT_TESTS
-static
-QUIC_STATUS
-AutoShutdownConnectionCallback(
-    MsQuicConnection* Connection,
-    void* Context,
-    QUIC_CONNECTION_EVENT* Event
-    )
-{
-    if (Event->Type == QUIC_CONNECTION_EVENT_CONNECTED) {
-        if (Context != nullptr) {
-            if (!((CxPlatEvent*)Context)->WaitTimeout(1000)) {
-                TEST_FAILURE("Peer never signaled connected event");
-            }
-        }
-        Connection->Shutdown(0);
-    }
-    return QUIC_STATUS_SUCCESS;
-}
+struct QuicServerSendResumeState {
+    CxPlatEvent ListenerAcceptEvent;
+    CxPlatEvent HandshakeCompleteEvent;
+};
 
 static
 _Function_class_(QUIC_CONNECTION_CALLBACK)
@@ -520,7 +506,7 @@ ResumptionFailConnectionCallback(
                 QUIC_STATUS_INVALID_STATE,
                 Status);
         }
-        CxPlatEventSet(*(CXPLAT_EVENT*)Context);
+        ((QuicServerSendResumeState*)Context)->HandshakeCompleteEvent.Set();
         return QUIC_STATUS_SUCCESS;
     } else if (Event->Type == QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE) {
         MsQuic->ConnectionClose(Connection);
@@ -533,7 +519,7 @@ _Function_class_(NEW_CONNECTION_CALLBACK)
 static
 bool
 ListenerFailSendResumeCallback(
-    _In_ TestListener*  Listener,
+    _In_ TestListener* Listener,
     _In_ HQUIC ConnectionHandle
     )
 {
@@ -554,17 +540,23 @@ ListenerFailSendResumeCallback(
         return false;
     }
     MsQuic->SetCallbackHandler(ConnectionHandle, (void*)ResumptionFailConnectionCallback, Listener->Context);
-    CxPlatEventSet(*(CXPLAT_EVENT*)Listener->Context);
+    ((QuicServerSendResumeState*)Listener->Context)->ListenerAcceptEvent.Set();
     return true;
 }
 #endif
 
 void QuicTestValidateConnection()
 {
-    MsQuicRegistration Registration;
+#ifndef QUIC_DISABLE_0RTT_TESTS
+    QuicServerSendResumeState ListenerContext;
+#endif
+    MsQuicRegistration Registration(true);
     TEST_TRUE(Registration.IsValid());
 
     MsQuicAlpn Alpn("MsQuicTest");
+
+    MsQuicConfiguration ServerConfigurationNoResumption(Registration, Alpn, ServerSelfSignedCredConfig);
+    TEST_TRUE(ServerConfigurationNoResumption.IsValid());
 
     MsQuicSettings Settings;
     Settings.SetServerResumptionLevel(QUIC_SERVER_RESUME_ONLY);
@@ -939,25 +931,25 @@ void QuicTestValidateConnection()
     //
 #ifndef QUIC_DISABLE_0RTT_TESTS
     {
-        TestListener MyListener(Registration, ListenerFailSendResumeCallback, ServerConfiguration);
+        TestListener MyListener(Registration, ListenerFailSendResumeCallback, ServerConfigurationNoResumption);
         TEST_TRUE(MyListener.IsValid());
 
         TEST_QUIC_SUCCEEDED(MyListener.Start(Alpn, Alpn.Length()));
         QuicAddr ServerLocalAddr;
         TEST_QUIC_SUCCEEDED(MyListener.GetLocalAddr(ServerLocalAddr));
 
-        CxPlatEvent Event;
-        MyListener.Context = &Event;
+        MyListener.Context = &ListenerContext;
 
         {
             //
             // Validate that the resumption ticket call fails in the listener.
             //
             {
-            MsQuicConnection Connection(Registration, CleanUpManual, AutoShutdownConnectionCallback);
+            TestScopeLogger logScope("SendResumption in Listener callback");
+            MsQuicConnection Connection(Registration);
             TEST_QUIC_SUCCEEDED(Connection.GetInitStatus());
             TEST_QUIC_SUCCEEDED(Connection.StartLocalhost(ClientConfiguration, ServerLocalAddr));
-            TEST_TRUE(Event.WaitTimeout(1000));
+            TEST_TRUE(ListenerContext.ListenerAcceptEvent.WaitTimeout(2000));
             }
 
             //
@@ -965,10 +957,12 @@ void QuicTestValidateConnection()
             // because resumption is not enabled.
             //
             {
-            MsQuicConnection Connection(Registration, CleanUpManual, AutoShutdownConnectionCallback, &Event);
+            TestScopeLogger logScope("SendResumption with resumption disabled");
+            MsQuicConnection Connection(Registration);
             TEST_QUIC_SUCCEEDED(Connection.GetInitStatus());
             TEST_QUIC_SUCCEEDED(Connection.StartLocalhost(ClientConfiguration, ServerLocalAddr));
-            TEST_TRUE(Event.WaitTimeout(1000));
+            TEST_TRUE(ListenerContext.ListenerAcceptEvent.WaitTimeout(2000));
+            TEST_TRUE(ListenerContext.HandshakeCompleteEvent.WaitTimeout(2000)); // Wait for server to get connected
             }
 
             //
@@ -976,10 +970,12 @@ void QuicTestValidateConnection()
             // isn't in connected state yet.
             //
             {
-            MsQuicConnection Connection(Registration, CleanUpManual, AutoShutdownConnectionCallback);
+            TestScopeLogger logScope("SendResumption handshake not complete");
+            MsQuicConnection Connection(Registration);
             TEST_QUIC_SUCCEEDED(Connection.GetInitStatus());
             TEST_QUIC_SUCCEEDED(Connection.StartLocalhost(ClientConfiguration, ServerLocalAddr));
-            TEST_TRUE(Event.WaitTimeout(1000));
+            TEST_TRUE(ListenerContext.ListenerAcceptEvent.WaitTimeout(2000));
+            TEST_TRUE(Connection.HandshakeCompleteEvent.WaitTimeout(2000)); // Wait for client to get connected
 
             //
             // TODO: add test case to validate ConnectionSendResumptionTicket:
@@ -1818,5 +1814,130 @@ QuicTestDesiredVersionSettings()
         for (unsigned i = 0; i < OutputSettings->DesiredVersionsListLength; ++i) {
             TEST_EQUAL(OutputSettings->DesiredVersionsList[i], CxPlatByteSwapUint32(DesiredVersions[i]));
         }
+    }
+}
+
+void
+QuicTestValidateParamApi()
+{
+    //
+    // Test backwards compatibility.
+    //
+    uint16_t LoadBalancingMode, LoadBalancingMode2;
+    uint32_t BufferSize = sizeof(LoadBalancingMode);
+
+    TEST_QUIC_STATUS(
+        QUIC_STATUS_INVALID_PARAMETER,
+        MsQuic->GetParam(
+            nullptr,
+            QUIC_PARAM_LEVEL_CONFIGURATION,
+            QUIC_PARAM_GLOBAL_LOAD_BALACING_MODE,
+            &BufferSize,
+            (void*)&LoadBalancingMode));
+
+    BufferSize = sizeof(LoadBalancingMode);
+    TEST_QUIC_SUCCEEDED(
+        MsQuic->GetParam(
+            nullptr,
+            QUIC_PARAM_LEVEL_GLOBAL,
+            2, // Special case to test backwards compatiblity
+            &BufferSize,
+            (void*)&LoadBalancingMode));
+
+    BufferSize = sizeof(LoadBalancingMode2);
+    TEST_QUIC_SUCCEEDED(
+        MsQuic->GetParam(
+            nullptr,
+            QUIC_PARAM_LEVEL_GLOBAL,
+            QUIC_PARAM_GLOBAL_LOAD_BALACING_MODE,
+            &BufferSize,
+            (void*)&LoadBalancingMode2));
+
+    TEST_EQUAL(LoadBalancingMode, LoadBalancingMode2);
+
+    TEST_QUIC_STATUS(
+        QUIC_STATUS_INVALID_PARAMETER,
+        MsQuic->SetParam(
+            nullptr,
+            QUIC_PARAM_LEVEL_CONFIGURATION,
+            QUIC_PARAM_GLOBAL_LOAD_BALACING_MODE,
+            BufferSize,
+            (void*)&LoadBalancingMode));
+
+    BufferSize = sizeof(LoadBalancingMode);
+    TEST_QUIC_SUCCEEDED(
+        MsQuic->SetParam(
+            nullptr,
+            QUIC_PARAM_LEVEL_GLOBAL,
+            2, // Special case to test backwards compatiblity
+            BufferSize,
+            (void*)&LoadBalancingMode));
+
+    BufferSize = sizeof(LoadBalancingMode2);
+    TEST_QUIC_SUCCEEDED(
+        MsQuic->SetParam(
+            nullptr,
+            QUIC_PARAM_LEVEL_GLOBAL,
+            QUIC_PARAM_GLOBAL_LOAD_BALACING_MODE,
+            BufferSize,
+            (void*)&LoadBalancingMode2));
+}
+
+static
+_IRQL_requires_max_(PASSIVE_LEVEL)
+_Function_class_(QUIC_LISTENER_CALLBACK)
+QUIC_STATUS
+QUIC_API
+RejectListenerCallback(
+    _In_ HQUIC /* Listener */,
+    _In_opt_ void* Context,
+    _Inout_ QUIC_LISTENER_EVENT* Event
+) noexcept {
+    if (Event->Type == QUIC_LISTENER_EVENT_NEW_CONNECTION) {
+        auto ShutdownEvent = (CxPlatEvent*)Context;
+        if (ShutdownEvent) {
+            MsQuic->ConnectionClose(Event->NEW_CONNECTION.Connection);
+            ShutdownEvent->Set();
+            return QUIC_STATUS_SUCCESS;
+        } else {
+            return QUIC_STATUS_ABORTED;
+        }
+    }
+    return QUIC_STATUS_SUCCESS;
+}
+
+void
+QuicTestConnectionRejection(
+    bool RejectByClosing
+    )
+{
+    CxPlatEvent ShutdownEvent;
+    MsQuicRegistration Registration(true);
+    TEST_QUIC_SUCCEEDED(Registration.GetInitStatus());
+
+    MsQuicConfiguration ServerConfiguration(Registration, "MsQuicTest", ServerSelfSignedCredConfig);
+    TEST_QUIC_SUCCEEDED(ServerConfiguration.GetInitStatus());
+
+    MsQuicCredentialConfig ClientCredConfig;
+    MsQuicConfiguration ClientConfiguration(Registration, "MsQuicTest", ClientCredConfig);
+    TEST_QUIC_SUCCEEDED(ClientConfiguration.GetInitStatus());
+
+    MsQuicListener Listener(Registration, RejectListenerCallback, RejectByClosing ? &ShutdownEvent : nullptr);
+    TEST_QUIC_SUCCEEDED(Listener.GetInitStatus());
+    QUIC_ADDRESS_FAMILY QuicAddrFamily = QUIC_ADDRESS_FAMILY_INET;
+    QuicAddr ServerLocalAddr(QuicAddrFamily);
+    TEST_QUIC_SUCCEEDED(Listener.Start("MsQuicTest", &ServerLocalAddr.SockAddr));
+    TEST_QUIC_SUCCEEDED(Listener.GetLocalAddr(ServerLocalAddr));
+
+    MsQuicConnection Connection(Registration);
+    TEST_QUIC_SUCCEEDED(Connection.GetInitStatus());
+    TEST_QUIC_SUCCEEDED(Connection.StartLocalhost(ClientConfiguration, ServerLocalAddr));
+
+    if (RejectByClosing) {
+        TEST_TRUE(ShutdownEvent.WaitTimeout(TestWaitTimeout));
+    } else {
+        TEST_TRUE(Connection.HandshakeCompleteEvent.WaitTimeout(TestWaitTimeout));
+        TEST_FALSE(Connection.HandshakeComplete);
+        TEST_EQUAL(Connection.TransportShutdownStatus, QUIC_STATUS_CONNECTION_REFUSED);
     }
 }

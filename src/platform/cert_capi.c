@@ -20,7 +20,13 @@ Environment:
 #endif
 
 #include <wincrypt.h>
-#include <msquic.h>
+#include "msquic.h"
+
+#ifdef QUIC_RESTRICTED_BUILD
+#ifndef NT_SUCCESS
+#define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+#endif
+#endif
 
 typedef union CXPLAT_SIGN_PADDING {
     BCRYPT_PKCS1_PADDING_INFO Pkcs1;
@@ -564,11 +570,11 @@ CxPlatCertFree(
 _Success_(return != FALSE)
 BOOLEAN
 CxPlatCertSelect(
-    _In_opt_ PCCERT_CONTEXT CertCtx,
+    _In_opt_ QUIC_CERTIFICATE* Certificate,
     _In_reads_(SignatureAlgorithmsLength)
-        const UINT16 *SignatureAlgorithms,
+        const uint16_t *SignatureAlgorithms,
     _In_ size_t SignatureAlgorithmsLength,
-    _Out_ UINT16 *SelectedSignature
+    _Out_ uint16_t *SelectedSignature
     )
 {
     //
@@ -577,6 +583,8 @@ CxPlatCertSelect(
     // Low byte of SignatureAlgorithms[] is the TLS SignatureAlgorithm:
     //  anonymous(0), rsa(1), dsa(2), ecdsa(3)
     //
+
+    PCCERT_CONTEXT CertCtx = (PCCERT_CONTEXT)Certificate;
 
     if (CertCtx == NULL) {
         *SelectedSignature = SignatureAlgorithms[0];
@@ -690,6 +698,195 @@ Exit:
 }
 
 _Success_(return != 0)
+QUIC_STATUS
+CxPlatGetPortableCertificate(
+    _In_ QUIC_CERTIFICATE* Certificate,
+    _Out_ QUIC_PORTABLE_CERTIFICATE* PortableCertificate
+    )
+{
+    QUIC_STATUS Status;
+    DWORD LastError;
+    CERT_CHAIN_PARA ChainPara;
+    CERT_ENHKEY_USAGE EnhKeyUsage;
+    CERT_USAGE_MATCH CertUsage;
+    PCCERT_CHAIN_CONTEXT ChainContext;
+    PCCERT_CONTEXT CertCtx = (PCCERT_CONTEXT)Certificate;
+    PCCERT_CONTEXT DuplicateCtx;
+    HCERTSTORE TempCertStore = NULL;
+    CERT_BLOB Blob = {0};
+
+    PortableCertificate->PlatformCertificate = NULL;
+
+    EnhKeyUsage.cUsageIdentifier = 0;
+    EnhKeyUsage.rgpszUsageIdentifier = NULL;
+    CertUsage.dwType = USAGE_MATCH_TYPE_AND;
+    CertUsage.Usage = EnhKeyUsage;
+    ChainPara.cbSize = sizeof(CERT_CHAIN_PARA);
+    ChainPara.RequestedUsage = CertUsage;
+
+    if (!CertGetCertificateChain(
+            NULL,  // default chain engine
+            CertCtx,
+            NULL,
+            NULL,
+            &ChainPara,
+            0,
+            NULL,
+            &ChainContext)) {
+        LastError = GetLastError();
+        Status = LastError;
+        QuicTraceEvent(
+            LibraryErrorStatus,
+            "[ lib] ERROR, %u, %s.",
+            LastError,
+            "CertGetCertificateChain failed");
+        goto Exit;
+    }
+
+    TempCertStore =
+        CertOpenStore(
+            CERT_STORE_PROV_MEMORY,
+            X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+            0,
+            CERT_STORE_ENUM_ARCHIVED_FLAG,
+            NULL);
+    if (NULL == TempCertStore) {
+        LastError = GetLastError();
+        Status = LastError;
+        QuicTraceEvent(
+            LibraryErrorStatus,
+            "[ lib] ERROR, %u, %s.",
+            LastError,
+            "CertOpenStore failed");
+        goto Exit;
+    }
+
+    for (DWORD i = 0; i < ChainContext->cChain; ++i) {
+        PCERT_SIMPLE_CHAIN SimpleChain = ChainContext->rgpChain[i];
+        for (DWORD j = 0; j < SimpleChain->cElement; ++j) {
+            PCERT_CHAIN_ELEMENT Element = SimpleChain->rgpElement[j];
+            PCCERT_CONTEXT EncodedCert = Element->pCertContext;
+            if (!CertAddCertificateLinkToStore(
+                    TempCertStore,
+                    EncodedCert,
+                    CERT_STORE_ADD_ALWAYS,
+                    NULL)) {
+                LastError = GetLastError();
+                Status = LastError;
+                QuicTraceEvent(
+                    LibraryErrorStatus,
+                    "[ lib] ERROR, %u, %s.",
+                    LastError,
+                    "CertAddCertificateLinkToStore failed");
+                goto Exit;
+            }
+        }
+    }
+
+    if (!CertSaveStore(
+            TempCertStore,
+            X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+            CERT_STORE_SAVE_AS_PKCS7,
+            CERT_STORE_SAVE_TO_MEMORY,
+            &Blob,
+            0)) {
+        LastError = GetLastError();
+        Status = LastError;
+        QuicTraceEvent(
+            LibraryErrorStatus,
+            "[ lib] ERROR, %u, %s.",
+            LastError,
+            "CertSaveStore failed");
+        goto Exit;
+    }
+
+    Blob.pbData = CXPLAT_ALLOC_NONPAGED(Blob.cbData, QUIC_POOL_TLS_PFX);
+    if (Blob.pbData == NULL) {
+        QuicTraceEvent(
+            AllocFailure,
+            "Allocation of '%s' failed. (%llu bytes)",
+            "PKCS7 data",
+            Blob.cbData);
+        Status = QUIC_STATUS_OUT_OF_MEMORY;
+        goto Exit;
+    }
+
+    if (!CertSaveStore(
+            TempCertStore,
+            X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+            CERT_STORE_SAVE_AS_PKCS7,
+            CERT_STORE_SAVE_TO_MEMORY,
+            &Blob,
+            0)) {
+        LastError = GetLastError();
+        Status = LastError;
+        QuicTraceEvent(
+            LibraryErrorStatus,
+            "[ lib] ERROR, %u, %s.",
+            LastError,
+            "CertSaveStore failed");
+        goto Exit;
+    }
+
+    DuplicateCtx = CertDuplicateCertificateContext(CertCtx);
+    if (DuplicateCtx == NULL) {
+        LastError = GetLastError();
+        Status = LastError;
+        QuicTraceEvent(
+            LibraryErrorStatus,
+            "[ lib] ERROR, %u, %s.",
+            LastError,
+            "CertDuplicateCertificateContext failed");
+        goto Exit;
+    }
+
+    PortableCertificate->PortableChain.Length = Blob.cbData;
+    PortableCertificate->PortableChain.Buffer = Blob.pbData;
+    Blob.pbData = NULL;
+
+    PortableCertificate->PortableCertificate.Length =
+        DuplicateCtx->cbCertEncoded;
+    PortableCertificate->PortableCertificate.Buffer =
+        DuplicateCtx->pbCertEncoded;
+
+    PortableCertificate->PlatformCertificate =
+        (QUIC_CERTIFICATE*)DuplicateCtx;
+
+    Status = QUIC_STATUS_SUCCESS;
+
+Exit:
+
+    if (Blob.pbData != NULL) {
+        CXPLAT_FREE(Blob.pbData, QUIC_POOL_TLS_PFX);
+    }
+
+    if (TempCertStore != NULL) {
+        CertCloseStore(TempCertStore, 0);
+    }
+
+    if (ChainContext != NULL) {
+        CertFreeCertificateChain(ChainContext);
+    }
+
+    return Status;
+}
+
+void
+CxPlatFreePortableCertificate(
+    _In_ QUIC_PORTABLE_CERTIFICATE* PortableCertificate
+    )
+{
+    if (PortableCertificate->PlatformCertificate) {
+        CertFreeCertificateContext(
+            (PCCERT_CONTEXT)PortableCertificate->PlatformCertificate);
+
+        CXPLAT_FREE(
+            PortableCertificate->PortableChain.Buffer,
+            QUIC_POOL_TLS_PFX);
+    }
+}
+
+_Success_(return != 0)
 size_t
 CxPlatCertFormat(
     _In_opt_ QUIC_CERTIFICATE* Certificate,
@@ -788,7 +985,7 @@ DWORD
 CxPlatCertVerifyCertChainPolicy(
     _In_ PCCERT_CHAIN_CONTEXT ChainContext,
     _In_opt_ PWSTR ServerName,
-    _In_ ULONG IgnoreFlags
+    _In_ uint32_t CredFlags
     )
 {
     DWORD Status = NO_ERROR;
@@ -799,9 +996,10 @@ CxPlatCertVerifyCertChainPolicy(
 
     memset(&HttpsPolicy, 0, sizeof(HTTPSPolicyCallbackData));
     HttpsPolicy.cbStruct = sizeof(HTTPSPolicyCallbackData);
-    HttpsPolicy.dwAuthType = AUTHTYPE_SERVER;
-    HttpsPolicy.fdwChecks = IgnoreFlags;
-    HttpsPolicy.pwszServerName = ServerName;
+    HttpsPolicy.dwAuthType =
+        (CredFlags & QUIC_CREDENTIAL_FLAG_CLIENT) ? AUTHTYPE_SERVER : AUTHTYPE_CLIENT;
+    HttpsPolicy.fdwChecks = 0;
+    HttpsPolicy.pwszServerName = (CredFlags & QUIC_CREDENTIAL_FLAG_CLIENT) ? ServerName : NULL;
 
     memset(&PolicyPara, 0, sizeof(PolicyPara));
     PolicyPara.cbSize = sizeof(PolicyPara);
@@ -823,6 +1021,12 @@ CxPlatCertVerifyCertChainPolicy(
             "CertVerifyCertificateChainPolicy failed");
         goto Exit;
 
+    } else if (PolicyStatus.dwError == CRYPT_E_NO_REVOCATION_CHECK &&
+        (CredFlags & QUIC_CREDENTIAL_FLAG_IGNORE_NO_REVOCATION_CHECK)) {
+        Status = NO_ERROR;
+    } else if (PolicyStatus.dwError == CRYPT_E_REVOCATION_OFFLINE &&
+        (CredFlags & QUIC_CREDENTIAL_FLAG_IGNORE_REVOCATION_OFFLINE)) {
+        Status = NO_ERROR;
     } else if (PolicyStatus.dwError != NO_ERROR) {
 
         Status = PolicyStatus.dwError;
@@ -840,7 +1044,7 @@ Exit:
         CertCapiVerifiedChain,
         "CertVerifyChain: %S 0x%x, result=0x%x",
         ServerName,
-        IgnoreFlags,
+        CredFlags,
         Status);
 
     return Status;
@@ -851,28 +1055,41 @@ BOOLEAN
 CxPlatCertValidateChain(
     _In_ const QUIC_CERTIFICATE* Certificate,
     _In_opt_z_ PCSTR Host,
-    _In_ uint32_t IgnoreFlags
+    _In_ uint32_t CertFlags,
+    _In_ uint32_t CredFlags,
+    _Out_opt_ uint32_t* ValidationError
     )
 {
     BOOLEAN Result = FALSE;
     PCCERT_CHAIN_CONTEXT ChainContext = NULL;
     LPWSTR ServerName = NULL;
+    DWORD Error = NO_ERROR;
 
     PCCERT_CONTEXT LeafCertCtx = (PCCERT_CONTEXT)Certificate;
 
     CERT_CHAIN_PARA ChainPara;
 
-    static const LPSTR UsageOids[] = {
+    static const LPSTR ServerUsageOids[] = {
         szOID_PKIX_KP_SERVER_AUTH,
         szOID_SERVER_GATED_CRYPTO,
         szOID_SGC_NETSCAPE
     };
 
+    static const LPSTR ClientUsageOids[] =  {
+        szOID_PKIX_KP_CLIENT_AUTH
+    };
+
+    if (ValidationError != NULL) {
+        *ValidationError = NO_ERROR;
+    }
+
     memset(&ChainPara, 0, sizeof(ChainPara));
     ChainPara.cbSize = sizeof(ChainPara);
     ChainPara.RequestedUsage.dwType = USAGE_MATCH_TYPE_OR;
-    ChainPara.RequestedUsage.Usage.cUsageIdentifier = ARRAYSIZE(UsageOids);
-    ChainPara.RequestedUsage.Usage.rgpszUsageIdentifier = (LPSTR*)UsageOids;
+    ChainPara.RequestedUsage.Usage.cUsageIdentifier =
+        (CredFlags & QUIC_CREDENTIAL_FLAG_CLIENT) ? ARRAYSIZE(ServerUsageOids) : ARRAYSIZE(ClientUsageOids);
+    ChainPara.RequestedUsage.Usage.rgpszUsageIdentifier =
+        (CredFlags & QUIC_CREDENTIAL_FLAG_CLIENT) ? (LPSTR*)ServerUsageOids : (LPSTR*)ClientUsageOids;
 
     if (!CertGetCertificateChain(
             NULL,
@@ -880,13 +1097,14 @@ CxPlatCertValidateChain(
             NULL,
             LeafCertCtx->hCertStore,
             &ChainPara,
-            0,
+            CertFlags,
             NULL,
             &ChainContext)) {
+        Error = GetLastError();
         QuicTraceEvent(
             LibraryErrorStatus,
             "[ lib] ERROR, %u, %s.",
-            GetLastError(),
+            Error,
             "CertGetCertificateChain failed");
         goto Exit;
     }
@@ -907,12 +1125,13 @@ CxPlatCertValidateChain(
         }
     }
 
-    Result =
-        NO_ERROR ==
+    Error =
         CxPlatCertVerifyCertChainPolicy(
             ChainContext,
             ServerName,
-            IgnoreFlags);
+            CredFlags);
+
+    Result = NO_ERROR == Error;
 
 Exit:
 
@@ -921,6 +1140,9 @@ Exit:
     }
     if (ServerName != NULL) {
         CXPLAT_FREE(ServerName, QUIC_POOL_PLATFORM_TMP_ALLOC);
+    }
+    if (ValidationError != NULL && !Result) {
+        *ValidationError = (uint32_t)Error;
     }
 
     return Result;

@@ -11,9 +11,15 @@
 typedef struct QUIC_CACHEALIGN QUIC_WORKER {
 
     //
-    // An event to kick the thread.
+    // Context for execution callbacks and state management.
     //
-    CXPLAT_EVENT Ready;
+    CXPLAT_EXECUTION_CONTEXT ExecutionContext;
+
+    //
+    // Event to signal when the execution context (i.e. worker thread) is
+    // complete.
+    //
+    CXPLAT_EVENT Done;
 
     //
     // TRUE if the worker is currently running.
@@ -31,19 +37,26 @@ typedef struct QUIC_CACHEALIGN QUIC_WORKER {
     uint16_t IdealProcessor;
 
     //
-    // The identifier of the platform thread.
-    //
-    CXPLAT_THREAD_ID ThreadID;
-
-    //
     // The average queue delay connections experience, in microseconds.
     //
     uint32_t AverageQueueDelay;
+
+#ifdef QUIC_WORKER_POLLING
+    //
+    // The number of poll loops that have been executed.
+    //
+    uint32_t PollCount;
+#endif // QUIC_WORKER_POLLING
 
     //
     // Timers for the worker's connections.
     //
     QUIC_TIMER_WHEEL TimerWheel;
+
+    //
+    // An event to kick the thread.
+    //
+    CXPLAT_EVENT Ready;
 
     //
     // A thread for draining operations from queued connections.

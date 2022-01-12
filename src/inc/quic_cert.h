@@ -18,6 +18,12 @@ Environment:
 typedef struct QUIC_CREDENTIAL_CONFIG QUIC_CREDENTIAL_CONFIG;
 typedef void QUIC_CERTIFICATE;
 
+typedef struct QUIC_PORTABLE_CERTIFICATE {
+    QUIC_CERTIFICATE* PlatformCertificate;
+    QUIC_BUFFER PortableCertificate;
+    QUIC_BUFFER PortableChain;
+} QUIC_PORTABLE_CERTIFICATE;
+
 //
 // Gets the certificate from the input configuration.
 //
@@ -61,6 +67,24 @@ CxPlatCertParseChain(
     );
 
 //
+// Gets a portable certificate and chain in PKCS7 format.
+//
+_Success_(return != 0)
+QUIC_STATUS
+CxPlatGetPortableCertificate(
+    _In_ QUIC_CERTIFICATE* Certificate,
+    _Out_ QUIC_PORTABLE_CERTIFICATE* PortableCertificate
+    );
+
+//
+// Frees a portable certificate and chain returned from CxPlatGetPortableCertificate
+//
+void
+CxPlatFreePortableCertificate(
+    _In_ QUIC_PORTABLE_CERTIFICATE* PortableCertificate
+    );
+
+//
 // Converts a certificate to the wireformat. Returns the length of the encoded
 // data.
 //
@@ -81,7 +105,9 @@ BOOLEAN
 CxPlatCertValidateChain(
     _In_ const QUIC_CERTIFICATE* Certificate,
     _In_opt_z_ const char* Host,
-    _In_ uint32_t IgnoreFlags
+    _In_ uint32_t CertFlags,
+    _In_ uint32_t CredFlags,
+    _Out_opt_ uint32_t* ValidationError
     );
 
 //
@@ -131,4 +157,22 @@ CxPlatCertVerify(
     _In_reads_(SignatureLength)
         const uint8_t *Signature,
     _In_ size_t SignatureLength
+    );
+
+QUIC_STATUS
+CxPlatCertExtractPrivateKey(
+    _In_ const QUIC_CREDENTIAL_CONFIG* CredConfig,
+    _In_z_ const char* Password,
+    _Outptr_result_buffer_(*PfxSize) uint8_t** PfxBytes,
+    _Out_ uint32_t* PfxSize
+    );
+
+_Success_(return != FALSE)
+BOOLEAN
+CxPlatCertVerifyRawCertificate(
+    _In_reads_bytes_(X509CertLength) unsigned char* X509Cert,
+    _In_ int X509CertLength,
+    _In_opt_ const char* SNI,
+    _In_ QUIC_CREDENTIAL_FLAGS CredFlags,
+    _Out_opt_ uint32_t* PlatformVerificationError
     );

@@ -10,6 +10,10 @@ Abstract:
 
 --*/
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
 //
 // Set of callbacks for TLS.
 //
@@ -269,7 +273,7 @@ QuicCryptoCustomCertValidationComplete(
 //
 _IRQL_requires_max_(DISPATCH_LEVEL)
 uint32_t
-QuicCrytpoTlsGetCompleteTlsMessagesLength(
+QuicCryptoTlsGetCompleteTlsMessagesLength(
     _In_reads_(BufferLength)
         const uint8_t* Buffer,
     _In_ uint32_t BufferLength
@@ -287,10 +291,8 @@ QuicCryptoTlsReadInitial(
     _In_reads_(BufferLength)
         const uint8_t* Buffer,
     _In_ uint32_t BufferLength,
-    _Inout_ QUIC_NEW_CONNECTION_INFO* Info
-#ifdef CXPLAT_TLS_SECRETS_SUPPORT
-    , _Inout_opt_ CXPLAT_TLS_SECRETS* TlsSecrets
-#endif
+    _Inout_ QUIC_NEW_CONNECTION_INFO* Info,
+    _Inout_opt_ QUIC_TLS_SECRETS* TlsSecrets
     );
 
 //
@@ -395,3 +397,7 @@ QuicCryptoDecodeClientTicket(
     _Out_ uint32_t* ServerTicketLength,
     _Out_ uint32_t* QuicVersion
     );
+
+#if defined(__cplusplus)
+}
+#endif

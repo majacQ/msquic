@@ -43,6 +43,7 @@
     <ClCompile Include="connection.c" />
     <ClCompile Include="crypto.c" />
     <ClCompile Include="crypto_tls.c" />
+    <ClCompile Include="cubic.c" />
     <ClCompile Include="datagram.c" />
     <ClCompile Include="frame.c" />
     <ClCompile Include="injection.c" />
@@ -50,6 +51,7 @@
     <ClCompile Include="listener.c" />
     <ClCompile Include="lookup.c" />
     <ClCompile Include="loss_detection.c" />
+    <ClCompile Include="mtu_discovery.c" />
     <ClCompile Include="operation.c" />
     <ClCompile Include="packet.c" />
     <ClCompile Include="packet_builder.c" />
@@ -79,12 +81,14 @@
     <ClInclude Include="congestion_control.h" />
     <ClInclude Include="connection.h" />
     <ClInclude Include="crypto.h" />
+    <ClInclude Include="cubic.h" />
     <ClInclude Include="datagram.h" />
     <ClInclude Include="frame.h" />
     <ClInclude Include="library.h" />
     <ClInclude Include="listener.h" />
     <ClInclude Include="lookup.h" />
     <ClInclude Include="loss_detection.h" />
+    <ClInclude Include="mtu_discovery.h" />
     <ClInclude Include="operation.h" />
     <ClInclude Include="packet.h" />
     <ClInclude Include="packet_builder.h" />
@@ -140,6 +144,12 @@
     <TargetName>core</TargetName>
     <OutDir>$(SolutionDir)build\winkernel\$(Platform)_$(Configuration)_schannel\bin\</OutDir>
     <IntDir>$(SolutionDir)build\winkernel\$(Platform)_$(Configuration)_schannel\obj\$(ProjectName)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup>
+    <ExternalIncludePath />
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(ONEBRANCH_BUILD)' != ''">
+    <ApiValidator_Enable>false</ApiValidator_Enable>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>

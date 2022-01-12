@@ -14,7 +14,7 @@ Abstract:
 #include <new.h>
 
 #ifdef QUIC_CLOG
-#include "drivermain.cpp.clog.h"
+#include "drvmain.cpp.clog.h"
 #endif
 
 DECLARE_CONST_UNICODE_STRING(SecNetPerfCtlDeviceNameBase, L"\\Device\\");
@@ -74,16 +74,12 @@ SecNetPerfCtlUninitialize(
         void
     );
 
-void* __cdecl operator new (size_t Size) {
-    return ExAllocatePool2(POOL_FLAG_NON_PAGED, Size, QUIC_POOL_PERF);
-}
-
 _Ret_maybenull_ _Post_writable_byte_size_(_Size)
 void* __cdecl operator new (size_t Size, const std::nothrow_t&) throw(){
     return ExAllocatePool2(POOL_FLAG_NON_PAGED, Size, QUIC_POOL_PERF);
 }
 
-void __cdecl operator delete (_In_opt_ void* Mem) {
+void __cdecl operator delete (/*_In_opt_*/ void* Mem) {
     if (Mem != nullptr) {
         ExFreePoolWithTag(Mem, QUIC_POOL_PERF);
     }
@@ -95,16 +91,12 @@ void __cdecl operator delete (_In_opt_ void* Mem, _In_opt_ size_t) {
     }
 }
 
-void* __cdecl operator new[] (size_t Size) {
-    return ExAllocatePool2(POOL_FLAG_NON_PAGED, Size, QUIC_POOL_PERF);
-}
-
 _Ret_maybenull_ _Post_writable_byte_size_(_Size)
 void* __cdecl operator new[] (size_t Size, const std::nothrow_t&) throw(){
     return ExAllocatePool2(POOL_FLAG_NON_PAGED, Size, QUIC_POOL_PERF);
 }
 
-void __cdecl operator delete[] (_In_opt_ void* Mem) {
+void __cdecl operator delete[] (/*_In_opt_*/ void* Mem) {
     if (Mem != nullptr) {
         ExFreePoolWithTag(Mem, QUIC_POOL_PERF);
     }
@@ -132,7 +124,7 @@ DriverEntry(
     WDFDRIVER Driver;
     BOOLEAN PlatformInitialized = FALSE;
 
-    CxPlatSystemLoad(DriverObject, RegistryPath);
+    CxPlatSystemLoad();
 
     Status = CxPlatInitialize();
     if (!NT_SUCCESS(Status)) {
@@ -324,10 +316,11 @@ SecNetPerfCtlInitialize(
         goto Error;
     }
 
-    QuicTraceLogVerbose(
+#if 0 // Disable this trace while we find a solution to %.*S
+    Q uicTraceLogVerbose(
         PerfControlInitialized,
         "[perf] Control interface initialized with %.*S", DeviceName.Length, DeviceName.Buffer);
-
+#endif
     WDF_FILEOBJECT_CONFIG_INIT(
         &FileConfig,
         SecNetPerfCtlEvtFileCreate,
@@ -469,7 +462,7 @@ SecNetPerfCtlEvtFileCreate(
     PAGED_CODE();
 
     KeEnterGuardedRegion();
-    ExfAcquirePushLockExclusive(&SecNetPerfCtlExtension->Lock);
+    ExAcquirePushLockExclusive(&SecNetPerfCtlExtension->Lock);
 
     do {
         if (SecNetPerfCtlExtension->ClientListSize >= 1) {
@@ -513,7 +506,7 @@ SecNetPerfCtlEvtFileCreate(
         CxPlatEventInitialize(&Client->StopEvent, true, false);
     } while (false);
 
-    ExfReleasePushLockExclusive(&SecNetPerfCtlExtension->Lock);
+    ExReleasePushLockExclusive(&SecNetPerfCtlExtension->Lock);
     KeLeaveGuardedRegion();
 
     WdfRequestComplete(Request, Status);
@@ -543,7 +536,7 @@ SecNetPerfCtlEvtFileCleanup(
     QUIC_DRIVER_CLIENT* Client = SecNetPerfCtlGetFileContext(FileObject);
     if (Client != nullptr) {
 
-        ExfAcquirePushLockExclusive(&SecNetPerfCtlExtension->Lock);
+        ExAcquirePushLockExclusive(&SecNetPerfCtlExtension->Lock);
 
         //
         // Remove the device client from the list
@@ -551,7 +544,7 @@ SecNetPerfCtlEvtFileCleanup(
         RemoveEntryList(&Client->Link);
         SecNetPerfCtlExtension->ClientListSize--;
 
-        ExfReleasePushLockExclusive(&SecNetPerfCtlExtension->Lock);
+        ExReleasePushLockExclusive(&SecNetPerfCtlExtension->Lock);
 
         QuicTraceLogInfo(
             PerfControlClientCleaningUp,

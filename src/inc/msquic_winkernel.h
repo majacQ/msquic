@@ -97,6 +97,7 @@ typedef UINT64 uint64_t;
 #define QUIC_STATUS_HANDSHAKE_FAILURE       STATUS_QUIC_HANDSHAKE_FAILURE       // 0xc0240000
 #define QUIC_STATUS_ABORTED                 STATUS_CANCELLED                    // 0xc0000120
 #define QUIC_STATUS_ADDRESS_IN_USE          STATUS_ADDRESS_ALREADY_EXISTS       // 0xc000020a
+#define QUIC_STATUS_INVALID_ADDRESS         STATUS_INVALID_ADDRESS_COMPONENT    // 0xc0000207
 #define QUIC_STATUS_CONNECTION_TIMEOUT      STATUS_QUIC_CONNECTION_TIMEOUT      // 0xc0240006
 #define QUIC_STATUS_CONNECTION_IDLE         STATUS_QUIC_CONNECTION_IDLE         // 0xc0240005
 #define QUIC_STATUS_UNREACHABLE             STATUS_HOST_UNREACHABLE             // 0xc000023d
@@ -113,6 +114,7 @@ typedef UINT64 uint64_t;
 #define QUIC_STATUS_CLOSE_NOTIFY            QUIC_STATUS_TLS_ALERT(0)    // Close notify
 #define QUIC_STATUS_BAD_CERTIFICATE         QUIC_STATUS_TLS_ALERT(42)   // Bad Certificate
 #define QUIC_STATUS_EXPIRED_CERTIFICATE     QUIC_STATUS_TLS_ALERT(45)   // Expired Certificate
+#define QUIC_STATUS_REQUIRED_CERTIFICATE    QUIC_STATUS_TLS_ALERT(116)  // Required Certificate
 
 #define QUIC_STATUS_CERT_EXPIRED            ((NTSTATUS)0x800B0101L)     // CERT_E_EXPIRED
 #define QUIC_STATUS_CERT_UNTRUSTED_ROOT     ((NTSTATUS)0x800B0109L)     // CERT_E_UNTRUSTEDROOT
@@ -302,13 +304,15 @@ QuicAddrFromString(
     _Out_ QUIC_ADDR* Addr
     )
 {
-    Addr->Ipv4.sin_port = QuicNetByteSwapShort(Port);
     if (RtlIpv4StringToAddressExA(AddrStr, FALSE, &Addr->Ipv4.sin_addr, &Addr->Ipv4.sin_port) == STATUS_SUCCESS) {
         Addr->si_family = QUIC_ADDRESS_FAMILY_INET;
     } else if (RtlIpv6StringToAddressExA(AddrStr, &Addr->Ipv6.sin6_addr, &Addr->Ipv6.sin6_scope_id, &Addr->Ipv6.sin6_port) == STATUS_SUCCESS) {
         Addr->si_family = QUIC_ADDRESS_FAMILY_INET6;
     } else {
         return FALSE;
+    }
+    if (Addr->Ipv4.sin_port == 0) {
+        Addr->Ipv4.sin_port = QuicNetByteSwapShort(Port);
     }
     return TRUE;
 }

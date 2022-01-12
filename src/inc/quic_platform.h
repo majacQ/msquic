@@ -17,7 +17,13 @@ Supported Environments:
 
 #pragma once
 
+#include <stddef.h>
+
 #define IS_POWER_OF_TWO(x) (((x) != 0) && (((x) & ((x) - 1)) == 0))
+
+#define CXPLAT_MAX(a,b) (((a) > (b)) ? (a) : (b))
+
+#define CXPLAT_MIN(a,b) (((a) < (b)) ? (a) : (b))
 
 //
 // Time unit conversion.
@@ -124,11 +130,11 @@ typedef struct CXPLAT_SLIST_ENTRY {
 #define QUIC_POOL_STATELESS_CTX             'C3cQ' // Qc3C - QUIC Stateless Context
 #define QUIC_POOL_OPER                      'D3cQ' // Qc3D - QUIC Operation
 #define QUIC_POOL_EVENT                     'E3cQ' // Qc3E - QUIC Event
-#define QUIC_POOL_TLS_RSA                   'F3cQ' // Qc3F - QUIC Platform NCrypt RSA Key
+#define QUIC_POOL_TLS_PFX                   'F3cQ' // Qc3F - QUIC Platform PFX
 #define QUIC_POOL_DESIRED_VER_LIST          '04cQ' // Qc40 - QUIC App-supplied desired versions list
 #define QUIC_POOL_DEFAULT_COMPAT_VER_LIST   '14cQ' // Qc41 - QUIC Default compatible versions list
-#define QUIC_POOL_VER_NEG_INFO              '24cQ' // Qc42 - QUIC Version negotiation info
-#define QUIC_POOL_RECVD_VER_LIST            '34cQ' // Qc43 - QUIC Received version negotiation list
+#define QUIC_POOL_VERSION_INFO              '24cQ' // Qc42 - QUIC Version info
+#define QUIC_POOL_PROCESS                   '34cQ' // Qc43 - QUIC Process
 #define QUIC_POOL_TLS_TMP_TP                '44cQ' // Qc44 - QUIC Platform TLS Temporary TP storage
 #define QUIC_POOL_PCP                       '54cQ' // Qc45 - QUIC PCP
 #define QUIC_POOL_DATAPATH_ADDRESSES        '64cQ' // Qc46 - QUIC Datapath Addresses
@@ -148,22 +154,79 @@ DEFINE_ENUM_FLAG_OPERATORS(CXPLAT_THREAD_FLAGS);
 
 #ifdef _KERNEL_MODE
 #define CX_PLATFORM_TYPE 1
-#include <quic_platform_winkernel.h>
+#include "quic_platform_winkernel.h"
 #elif _WIN32
 #define CX_PLATFORM_TYPE 2
-#include <quic_platform_winuser.h>
+#include "quic_platform_winuser.h"
 #elif CX_PLATFORM_LINUX
 #define CX_PLATFORM_TYPE 3
 #define CX_PLATFORM_USES_TLS_BUILTIN_CERTIFICATE 1
-#include <quic_platform_posix.h>
+#include "quic_platform_posix.h"
 #elif CX_PLATFORM_DARWIN
 #define CX_PLATFORM_TYPE 4
-#define CX_PLATFORM_USES_TLS_BUILTIN_CERTIFICATE 1
-#include <quic_platform_posix.h>
+#include "quic_platform_posix.h"
 #else
 #define CX_PLATFORM_TYPE 0xFF
 #error "Unsupported Platform"
 #endif
+
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
+//
+// Library Initialization
+//
+
+//
+// Called in main, DLLMain or DriverEntry.
+//
+PAGEDX
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+CxPlatSystemLoad(
+    void
+    );
+
+//
+// Called in main (exit), DLLMain or DriverUnload.
+//
+PAGEDX
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+CxPlatSystemUnload(
+    void
+    );
+
+//
+// Initializes the PAL library. Calls to this and
+// CxPlatformUninitialize must be serialized and cannot overlap.
+//
+PAGEDX
+_IRQL_requires_max_(PASSIVE_LEVEL)
+QUIC_STATUS
+CxPlatInitialize(
+    void
+    );
+
+//
+// Uninitializes the PAL library. Calls to this and
+// CxPlatformInitialize must be serialized and cannot overlap.
+//
+PAGEDX
+_IRQL_requires_max_(PASSIVE_LEVEL)
+void
+CxPlatUninitialize(
+    void
+    );
+
+#if defined(__cplusplus)
+}
+#endif
+
+//
+// List Abstraction
+//
 
 #define QuicListEntryValidate(Entry) \
     CXPLAT_DBG_ASSERT( \
@@ -187,6 +250,16 @@ CxPlatListIsEmpty(
     )
 {
     return (BOOLEAN)(ListHead->Flink == ListHead);
+}
+
+_Must_inspect_result_
+FORCEINLINE
+BOOLEAN
+CxPlatListIsEmptyNoFence(
+    _In_ const CXPLAT_LIST_ENTRY* ListHead
+    )
+{
+    return (BOOLEAN)(QuicReadPtrNoFence((void**)&ListHead->Flink) == ListHead);
 }
 
 FORCEINLINE
@@ -340,6 +413,33 @@ CxPlatGetAllocFailDenominator(
 #define CxPlatIsRandomMemoryFailureEnabled() (FALSE)
 #endif
 
+//
+// General purpose execution context abstraction layer. Used for driving worker
+// loops.
+//
+
+typedef struct CXPLAT_EXECUTION_CONTEXT CXPLAT_EXECUTION_CONTEXT;
+
+//
+// Returns FALSE when it's time to cleanup.
+//
+typedef
+_IRQL_requires_max_(PASSIVE_LEVEL)
+BOOLEAN
+(*CXPLAT_EXECUTION_FN)(
+    _Inout_ CXPLAT_EXECUTION_CONTEXT* Context,
+    _Inout_ uint64_t* TimeNowUs,    // The current time, in microseconds.
+    _In_ CXPLAT_THREAD_ID ThreadID  // The current thread ID.
+    );
+
+typedef struct CXPLAT_EXECUTION_CONTEXT {
+
+    void* Context;
+    CXPLAT_EXECUTION_FN Callback;
+    uint64_t NextTimeUs;
+    BOOLEAN Ready;
+
+} CXPLAT_EXECUTION_CONTEXT;
 
 //
 // Test Interface for loading a self-signed certificate.

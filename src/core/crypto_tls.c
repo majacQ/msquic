@@ -60,10 +60,10 @@ typedef enum eSniNameType {
 //
 // Extensions
 //
-#define QUIC_TP_ID_MAX_DATAGRAM_FRAME_SIZE                  32  // varint
-#define QUIC_TP_ID_DISABLE_1RTT_ENCRYPTION                  0xBAAD  // N/A
-#define QUIC_TP_ID_VERSION_NEGOTIATION_EXT                  0x73DB  // Blob
-#define QUIC_TP_ID_MIN_ACK_DELAY                            0xFF02DE1AULL  // varint
+#define QUIC_TP_ID_MAX_DATAGRAM_FRAME_SIZE                  32              // varint
+#define QUIC_TP_ID_DISABLE_1RTT_ENCRYPTION                  0xBAAD          // N/A
+#define QUIC_TP_ID_VERSION_NEGOTIATION_EXT                  0xFF73DB        // Blob
+#define QUIC_TP_ID_MIN_ACK_DELAY                            0xFF02DE1AULL   // varint
 
 BOOLEAN
 QuicTpIdIsReserved(
@@ -438,10 +438,8 @@ QuicCryptoTlsReadClientHello(
     _In_reads_(BufferLength)
         const uint8_t* Buffer,
     _In_ uint32_t BufferLength,
-    _Inout_ QUIC_NEW_CONNECTION_INFO* Info
-#ifdef CXPLAT_TLS_SECRETS_SUPPORT
-    , _Inout_opt_ CXPLAT_TLS_SECRETS* TlsSecrets
-#endif
+    _Inout_ QUIC_NEW_CONNECTION_INFO* Info,
+    _Inout_opt_ QUIC_TLS_SECRETS* TlsSecrets
     )
 {
     /*
@@ -486,12 +484,10 @@ QuicCryptoTlsReadClientHello(
             "Parse error. ReadTlsClientHello #2");
         return QUIC_STATUS_INVALID_PARAMETER;
     }
-#ifdef CXPLAT_TLS_SECRETS_SUPPORT
     if (TlsSecrets != NULL) {
         memcpy(TlsSecrets->ClientRandom, Buffer, TLS_RANDOM_LENGTH);
         TlsSecrets->IsSet.ClientRandom = TRUE;
     }
-#endif
     BufferLength -= TLS_RANDOM_LENGTH;
     Buffer += TLS_RANDOM_LENGTH;
 
@@ -576,7 +572,7 @@ QuicCryptoTlsReadClientHello(
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 uint32_t
-QuicCrytpoTlsGetCompleteTlsMessagesLength(
+QuicCryptoTlsGetCompleteTlsMessagesLength(
     _In_reads_(BufferLength)
         const uint8_t* Buffer,
     _In_ uint32_t BufferLength
@@ -607,10 +603,8 @@ QuicCryptoTlsReadInitial(
     _In_reads_(BufferLength)
         const uint8_t* Buffer,
     _In_ uint32_t BufferLength,
-    _Inout_ QUIC_NEW_CONNECTION_INFO* Info
-#ifdef CXPLAT_TLS_SECRETS_SUPPORT
-    , _Inout_opt_ CXPLAT_TLS_SECRETS* TlsSecrets
-#endif
+    _Inout_ QUIC_NEW_CONNECTION_INFO* Info,
+    _Inout_opt_ QUIC_TLS_SECRETS* TlsSecrets
     )
 {
     do {
@@ -637,10 +631,8 @@ QuicCryptoTlsReadInitial(
                 Connection,
                 Buffer + TLS_MESSAGE_HEADER_LENGTH,
                 MessageLength,
-                Info
-#ifdef CXPLAT_TLS_SECRETS_SUPPORT
-                , TlsSecrets
-#endif
+                Info,
+                TlsSecrets
                 );
         if (QUIC_FAILED(Status)) {
             return Status;
@@ -817,7 +809,7 @@ QuicCryptoTlsEncodeTransportParameters(
         RequiredTPLen += (size_t)
             TlsTransportParamLength(
                 QUIC_TP_ID_VERSION_NEGOTIATION_EXT,
-                TransportParams->VersionNegotiationInfoLength);
+                TransportParams->VersionInfoLength);
     }
     if (TransportParams->Flags & QUIC_TP_FLAG_MIN_ACK_DELAY) {
         CXPLAT_DBG_ASSERT(
@@ -1097,14 +1089,14 @@ QuicCryptoTlsEncodeTransportParameters(
         TPBuf =
             TlsWriteTransportParam(
                 QUIC_TP_ID_VERSION_NEGOTIATION_EXT,
-                (uint16_t)TransportParams->VersionNegotiationInfoLength,
-                TransportParams->VersionNegotiationInfo,
+                (uint16_t)TransportParams->VersionInfoLength,
+                TransportParams->VersionInfo,
                 TPBuf);
         QuicTraceLogConnVerbose(
             EncodeTPVersionNegotiationExt,
             Connection,
-            "TP: Version Negotiation Extension (%llu bytes)",
-            TransportParams->VersionNegotiationInfoLength);
+            "TP: Version Negotiation Extension (%u bytes)",
+            TransportParams->VersionInfoLength);
     }
     if (TransportParams->Flags & QUIC_TP_FLAG_MIN_ACK_DELAY) {
         TPBuf =
@@ -1694,8 +1686,8 @@ QuicCryptoTlsDecodeTransportParameters(
                     "Invalid length of QUIC_TP_ID_VERSION_NEGOTIATION_EXT");
                 goto Exit;
             }
-            TransportParams->VersionNegotiationInfo = CXPLAT_ALLOC_NONPAGED(Length, QUIC_POOL_VER_NEG_INFO);
-            if (TransportParams->VersionNegotiationInfo == NULL) {
+            TransportParams->VersionInfo = CXPLAT_ALLOC_NONPAGED(Length, QUIC_POOL_VERSION_INFO);
+            if (TransportParams->VersionInfo == NULL) {
                 QuicTraceEvent(
                     AllocFailure,
                     "Allocation of '%s' failed. (%llu bytes)",
@@ -1705,8 +1697,8 @@ QuicCryptoTlsDecodeTransportParameters(
                     Length);
             } else {
                 TransportParams->Flags |= QUIC_TP_FLAG_VERSION_NEGOTIATION;
-                CxPlatCopyMemory((uint8_t*)TransportParams->VersionNegotiationInfo, TPBuf + Offset, Length);
-                TransportParams->VersionNegotiationInfoLength = Length;
+                CxPlatCopyMemory((uint8_t*)TransportParams->VersionInfo, TPBuf + Offset, Length);
+                TransportParams->VersionInfoLength = Length;
                 QuicTraceLogConnVerbose(
                     DecodeTPVersionNegotiationInfo,
                     Connection,
@@ -1789,22 +1781,22 @@ QuicCryptoTlsCopyTransportParameters(
 {
     *Destination = *Source;
     if (Source->Flags & QUIC_TP_FLAG_VERSION_NEGOTIATION) {
-        Destination->VersionNegotiationInfo =
-            CXPLAT_ALLOC_NONPAGED((size_t)Source->VersionNegotiationInfoLength, QUIC_POOL_VER_NEG_INFO);
-        if (Destination->VersionNegotiationInfo == NULL) {
+        Destination->VersionInfo =
+            CXPLAT_ALLOC_NONPAGED((size_t)Source->VersionInfoLength, QUIC_POOL_VERSION_INFO);
+        if (Destination->VersionInfo == NULL) {
             QuicTraceEvent(
                 AllocFailure,
                 "Allocation of '%s' failed. (%llu bytes)",
                 "Version Negotiation Info",
-                Source->VersionNegotiationInfoLength);
+                Source->VersionInfoLength);
             return QUIC_STATUS_OUT_OF_MEMORY;
         }
         Destination->Flags |= QUIC_TP_FLAG_VERSION_NEGOTIATION;
         CxPlatCopyMemory(
-            (uint8_t*)Destination->VersionNegotiationInfo,
-            Source->VersionNegotiationInfo,
-            (size_t)Source->VersionNegotiationInfoLength);
-        Destination->VersionNegotiationInfoLength = Source->VersionNegotiationInfoLength;
+            (uint8_t*)Destination->VersionInfo,
+            Source->VersionInfo,
+            (size_t)Source->VersionInfoLength);
+        Destination->VersionInfoLength = Source->VersionInfoLength;
     }
     return QUIC_STATUS_SUCCESS;
 }
@@ -1816,9 +1808,9 @@ QuicCryptoTlsCleanupTransportParameters(
     )
 {
     if (TransportParams->Flags & QUIC_TP_FLAG_VERSION_NEGOTIATION) {
-        CXPLAT_FREE(TransportParams->VersionNegotiationInfo, QUIC_POOL_VER_NEG_INFO);
-        TransportParams->VersionNegotiationInfo = NULL;
-        TransportParams->VersionNegotiationInfoLength = 0;
+        CXPLAT_FREE(TransportParams->VersionInfo, QUIC_POOL_VERSION_INFO);
+        TransportParams->VersionInfo = NULL;
+        TransportParams->VersionInfoLength = 0;
         TransportParams->Flags &= ~QUIC_TP_FLAG_VERSION_NEGOTIATION;
     }
 }

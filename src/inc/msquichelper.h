@@ -15,9 +15,9 @@ Environment:
 
 #pragma once
 
-#include <quic_platform.h>
-#include <msquic.h>
-#include <msquicp.h>
+#include "quic_platform.h"
+#include "msquic.h"
+#include "msquicp.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -73,13 +73,13 @@ QuicStatusToString(
 inline
 uint32_t
 GetConnRtt(
-    _In_ const QUIC_API_TABLE* MsQuic,
+    _In_ const QUIC_API_TABLE* MsQuicTable,
     _In_ HQUIC Handle
     )
 {
     QUIC_STATISTICS Value;
     uint32_t ValueSize = sizeof(Value);
-    MsQuic->GetParam(
+    MsQuicTable->GetParam(
         Handle,
         QUIC_PARAM_LEVEL_CONNECTION,
         QUIC_PARAM_CONN_STATISTICS,
@@ -94,13 +94,13 @@ GetConnRtt(
 inline
 uint64_t
 GetStreamID(
-    _In_ const QUIC_API_TABLE* MsQuic,
+    _In_ const QUIC_API_TABLE* MsQuicTable,
     _In_ HQUIC Handle
     )
 {
     uint64_t ID = (uint32_t)(-1);
     uint32_t IDLen = sizeof(ID);
-    MsQuic->GetParam(
+    MsQuicTable->GetParam(
         Handle,
         QUIC_PARAM_LEVEL_STREAM,
         QUIC_PARAM_STREAM_ID,
@@ -116,7 +116,7 @@ GetStreamID(
 inline
 QUIC_ADDR_STR
 GetRemoteAddr(
-    _In_ const QUIC_API_TABLE* MsQuic,
+    _In_ const QUIC_API_TABLE* MsQuicTable,
     _In_ HQUIC Handle
     )
 {
@@ -124,7 +124,7 @@ GetRemoteAddr(
     uint32_t addrLen = sizeof(addr);
     QUIC_ADDR_STR addrStr = { 0 };
     QUIC_STATUS status =
-        MsQuic->GetParam(
+        MsQuicTable->GetParam(
             Handle,
             QUIC_PARAM_LEVEL_CONNECTION,
             QUIC_PARAM_CONN_REMOTE_ADDRESS,
@@ -139,13 +139,13 @@ GetRemoteAddr(
 inline
 QUIC_STATUS
 QuicForceRetry(
-    _In_ const QUIC_API_TABLE* MsQuic,
+    _In_ const QUIC_API_TABLE* MsQuicTable,
     _In_ BOOLEAN Enabled
     )
 {
     uint16_t value = Enabled ? 0 : 65;
     return
-        MsQuic->SetParam(
+        MsQuicTable->SetParam(
             NULL,
             QUIC_PARAM_LEVEL_GLOBAL,
             QUIC_PARAM_GLOBAL_RETRY_MEMORY_PERCENT,
@@ -156,12 +156,12 @@ QuicForceRetry(
 inline
 void
 DumpMsQuicPerfCounters(
-    _In_ const QUIC_API_TABLE* MsQuic
+    _In_ const QUIC_API_TABLE* MsQuicTable
     )
 {
     uint64_t Counters[QUIC_PERF_COUNTER_MAX] = {0};
     uint32_t Lenth = sizeof(Counters);
-    MsQuic->GetParam(
+    MsQuicTable->GetParam(
         NULL,
         QUIC_PARAM_LEVEL_GLOBAL,
         QUIC_PARAM_GLOBAL_PERF_COUNTERS,
@@ -194,6 +194,10 @@ DumpMsQuicPerfCounters(
     printf("  WORK_OPER_QUEUE_DEPTH: %llu\n", (unsigned long long)Counters[QUIC_PERF_COUNTER_WORK_OPER_QUEUE_DEPTH]);
     printf("  WORK_OPER_QUEUED:      %llu\n", (unsigned long long)Counters[QUIC_PERF_COUNTER_WORK_OPER_QUEUED]);
     printf("  WORK_OPER_COMPLETED:   %llu\n", (unsigned long long)Counters[QUIC_PERF_COUNTER_WORK_OPER_COMPLETED]);
+    printf("  PATH_VALIDATED:        %llu\n", (unsigned long long)Counters[QUIC_PERF_COUNTER_PATH_VALIDATED]);
+    printf("  PATH_FAILURE:          %llu\n", (unsigned long long)Counters[QUIC_PERF_COUNTER_PATH_FAILURE]);
+    printf("  SEND_STATELESS_RESET:  %llu\n", (unsigned long long)Counters[QUIC_PERF_COUNTER_SEND_STATELESS_RESET]);
+    printf("  SEND_STATELESS_RETRY:  %llu\n", (unsigned long long)Counters[QUIC_PERF_COUNTER_SEND_STATELESS_RETRY]);
 }
 
 //
@@ -289,7 +293,7 @@ IsValue(
     _In_z_ const char* toTestAgainst
     )
 {
-    return _strnicmp(name, toTestAgainst, min(strlen(name), strlen(toTestAgainst))) == 0;
+    return _strnicmp(name, toTestAgainst, CXPLAT_MIN(strlen(name), strlen(toTestAgainst))) == 0;
 }
 
 inline
@@ -445,7 +449,7 @@ HQUIC
 GetServerConfigurationFromArgs(
     _In_ int argc,
     _In_reads_(argc) _Null_terminated_ char* argv[],
-    _In_ const QUIC_API_TABLE* MsQuic,
+    _In_ const QUIC_API_TABLE* MsQuicTable,
     _In_ HQUIC Registration,
     _In_reads_(AlpnBufferCount) _Pre_defensive_
         const QUIC_BUFFER* const AlpnBuffers,
@@ -512,7 +516,7 @@ GetServerConfigurationFromArgs(
 
     HQUIC Configuration = nullptr;
     if (QUIC_SUCCEEDED(
-        MsQuic->ConfigurationOpen(
+        MsQuicTable->ConfigurationOpen(
             Registration,
             AlpnBuffers,
             AlpnBufferCount,
@@ -521,10 +525,10 @@ GetServerConfigurationFromArgs(
             Context,
             &Configuration)) &&
         QUIC_FAILED(
-        MsQuic->ConfigurationLoadCredential(
+        MsQuicTable->ConfigurationLoadCredential(
             Configuration,
             Config))) {
-        MsQuic->ConfigurationClose(Configuration);
+        MsQuicTable->ConfigurationClose(Configuration);
         Configuration = nullptr;
     }
 
@@ -540,24 +544,24 @@ GetServerConfigurationFromArgs(
 inline
 void
 FreeServerConfiguration(
-    _In_ const QUIC_API_TABLE* MsQuic,
+    _In_ const QUIC_API_TABLE* MsQuicTable,
     _In_ HQUIC Configuration
     )
 {
 #ifdef QUIC_TEST_APIS
-    auto SelfSignedConfig = (const QUIC_CREDENTIAL_CONFIG*)MsQuic->GetContext(Configuration);
+    auto SelfSignedConfig = (const QUIC_CREDENTIAL_CONFIG*)MsQuicTable->GetContext(Configuration);
     if (SelfSignedConfig) {
         CxPlatFreeSelfSignedCert(SelfSignedConfig);
     }
 #endif
-    MsQuic->ConfigurationClose(Configuration);
+    MsQuicTable->ConfigurationClose(Configuration);
 }
 
 inline
 void
 WriteSslKeyLogFile(
     _In_z_ const char* FileName,
-    _In_ CXPLAT_TLS_SECRETS& TlsSecrets
+    _In_ QUIC_TLS_SECRETS& TlsSecrets
     )
 {
     FILE* File = nullptr;
@@ -577,8 +581,8 @@ WriteSslKeyLogFile(
     if (fseek(File, 0, SEEK_END) == 0 && ftell(File) == 0) {
         fprintf(File, "# TLS 1.3 secrets log file, generated by quicinterop\n");
     }
-    char ClientRandomBuffer[(2 * sizeof(CXPLAT_TLS_SECRETS::ClientRandom)) + 1] = {0};
-    char TempHexBuffer[(2 * CXPLAT_TLS_SECRETS_MAX_SECRET_LEN) + 1] = {0};
+    char ClientRandomBuffer[(2 * sizeof(QUIC_TLS_SECRETS::ClientRandom)) + 1] = {0};
+    char TempHexBuffer[(2 * QUIC_TLS_SECRETS_MAX_SECRET_LEN) + 1] = {0};
     if (TlsSecrets.IsSet.ClientRandom) {
         EncodeHexBuffer(
             TlsSecrets.ClientRandom,

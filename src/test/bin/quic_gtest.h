@@ -7,9 +7,9 @@
 
 #define QUIC_TEST_APIS 1
 
-#include <quic_platform.h>
-#include <MsQuicTests.h>
-#include <msquichelper.h>
+#include "quic_platform.h"
+#include "MsQuicTests.h"
+#include "msquichelper.h"
 #include "quic_trace.h"
 #include "quic_driver_helpers.h"
 #undef min // gtest headers conflict with previous definitions of min/max.
@@ -23,6 +23,33 @@ extern bool TestingKernelMode;
 
 class WithBool : public testing::Test,
     public testing::WithParamInterface<bool> {
+};
+
+struct MtuArgs {
+    int Family;
+    int DropMode;
+    uint8_t RaiseMinimum;
+    static ::std::vector<MtuArgs> Generate() {
+        ::std::vector<MtuArgs> list;
+        for (int Family : { 4, 6}) {
+            for (int DropMode : {0, 1, 2, 3}) {
+                for (uint8_t RaiseMinimum : {0, 1}) {
+                    list.push_back({ Family, DropMode, RaiseMinimum });
+                }
+            }
+        }
+        return list;
+    }
+};
+
+std::ostream& operator << (std::ostream& o, const MtuArgs& args) {
+    return o <<
+        (args.Family == 4 ? "v4" : "v6") << "/" <<
+        args.DropMode << "/" << args.RaiseMinimum << "/";
+}
+
+class WithMtuArgs : public testing::Test,
+    public testing::WithParamInterface<MtuArgs> {
 };
 
 struct FamilyArgs {
@@ -97,12 +124,14 @@ struct HandshakeArgs3 {
     int Family;
     bool ServerStatelessRetry;
     bool MultipleALPNs;
+    bool DelayedAsyncConfig;
     static ::std::vector<HandshakeArgs3> Generate() {
         ::std::vector<HandshakeArgs3> list;
         for (int Family : { 4, 6})
         for (bool ServerStatelessRetry : { false, true })
         for (bool MultipleALPNs : { false, true })
-            list.push_back({ Family, ServerStatelessRetry, MultipleALPNs });
+        for (bool DelayedAsyncConfig : { false, true })
+            list.push_back({ Family, ServerStatelessRetry, MultipleALPNs, DelayedAsyncConfig });
         return list;
     }
 };
@@ -111,7 +140,8 @@ std::ostream& operator << (std::ostream& o, const HandshakeArgs3& args) {
     return o <<
         (args.Family == 4 ? "v4" : "v6") << "/" <<
         (args.ServerStatelessRetry ? "Retry" : "NoRetry") << "/" <<
-        (args.MultipleALPNs ? "MultipleALPNs" : "SingleALPN");
+        (args.MultipleALPNs ? "MultipleALPNs" : "SingleALPN") << "/" <<
+        (args.DelayedAsyncConfig ? "DelayedAsyncConfig" : "AsyncConfig");
 }
 
 class WithHandshakeArgs3 : public testing::Test,
@@ -600,4 +630,65 @@ std::ostream& operator << (std::ostream& o, const DrillInitialPacketTokenArgs& a
 
 class WithDrillInitialPacketTokenArgs: public testing::Test,
     public testing::WithParamInterface<DrillInitialPacketTokenArgs> {
+};
+
+struct ValidateConnectionEventArgs {
+    uint32_t Test;
+    static ::std::vector<ValidateConnectionEventArgs> Generate() {
+        ::std::vector<ValidateConnectionEventArgs> list;
+#ifndef QUIC_DISABLE_0RTT_TESTS
+        for (uint32_t Test = 0; Test < 3; ++Test)
+#else
+        for (uint32_t Test = 0; Test < 2; ++Test)
+#endif
+            list.push_back({ Test });
+        return list;
+    }
+};
+
+std::ostream& operator << (std::ostream& o, const ValidateConnectionEventArgs& args) {
+    return o << args.Test;
+}
+
+class WithValidateConnectionEventArgs : public testing::Test,
+    public testing::WithParamInterface<ValidateConnectionEventArgs> {
+};
+
+struct ValidateStreamEventArgs {
+    uint32_t Test;
+    static ::std::vector<ValidateStreamEventArgs> Generate() {
+        ::std::vector<ValidateStreamEventArgs> list;
+        for (uint32_t Test = 0; Test < 7; ++Test)
+            list.push_back({ Test });
+        return list;
+    }
+};
+
+std::ostream& operator << (std::ostream& o, const ValidateStreamEventArgs& args) {
+    return o << args.Test;
+}
+
+class WithValidateStreamEventArgs : public testing::Test,
+    public testing::WithParamInterface<ValidateStreamEventArgs> {
+};
+
+struct RebindPaddingArgs {
+    int Family;
+    uint16_t Padding;
+    static ::std::vector<RebindPaddingArgs> Generate() {
+        ::std::vector<RebindPaddingArgs> list;
+        for (int Family : { 4, 6 })
+        for (uint16_t Padding = 1; Padding < 75; ++Padding)
+            list.push_back({ Family, Padding });
+        return list;
+    }
+};
+
+std::ostream& operator << (std::ostream& o, const RebindPaddingArgs& args) {
+    return o << (args.Family == 4 ? "v4" : "v6") << "/"
+        << args.Padding;
+}
+
+class WithRebindPaddingArgs : public testing::Test,
+    public testing::WithParamInterface<RebindPaddingArgs> {
 };

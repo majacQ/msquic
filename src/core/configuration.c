@@ -53,7 +53,7 @@ MsQuicConfigurationOpen(
     }
 
     if (Settings != NULL &&
-        SettingsSize < (uint32_t)FIELD_OFFSET(QUIC_SETTINGS, MaxBytesPerKey)) {
+        SettingsSize < (uint32_t)FIELD_OFFSET(QUIC_SETTINGS, DesiredVersionsList)) {
         Status = QUIC_STATUS_INVALID_PARAMETER;
         goto Error;
     }
@@ -145,6 +145,11 @@ MsQuicConfigurationOpen(
     }
 #endif
 
+#ifdef QUIC_OWNING_PROCESS
+    Configuration->OwningProcess = QuicProcessGetCurrentProcess();
+    QuicProcessAddRef(Configuration->OwningProcess);
+#endif
+
     if (Registration->AppNameLength != 0) {
         char SpecificAppKey[UINT8_MAX + sizeof(QUIC_SETTING_APP_KEY)] = QUIC_SETTING_APP_KEY;
         CxPlatCopyMemory(
@@ -168,9 +173,10 @@ MsQuicConfigurationOpen(
     }
 
     if (Settings != NULL && Settings->IsSetFlags != 0) {
-        CXPLAT_DBG_ASSERT(SettingsSize >= (uint32_t)FIELD_OFFSET(QUIC_SETTINGS, MaxBytesPerKey));
+        CXPLAT_DBG_ASSERT(SettingsSize >= (uint32_t)FIELD_OFFSET(QUIC_SETTINGS, DesiredVersionsList));
         if (!QuicSettingApply(
                 &Configuration->Settings,
+                TRUE,
                 TRUE,
                 TRUE,
                 SettingsSize,
@@ -241,6 +247,10 @@ QuicConfigurationUninitialize(
 #ifdef QUIC_SILO
     CxPlatStorageClose(Configuration->Storage);
     QuicSiloRelease(Configuration->Silo);
+#endif
+
+#ifdef QUIC_OWNING_PROCESS
+    QuicProcessRelease(Configuration->OwningProcess);
 #endif
 
     QuicSettingsCleanup(&Configuration->Settings);
@@ -463,6 +473,7 @@ QuicConfigurationParamSet(
 
         if (!QuicSettingApply(
                 &Configuration->Settings,
+                TRUE,
                 TRUE,
                 TRUE,
                 BufferLength,

@@ -25,8 +25,11 @@ $PSDefaultParameterValues['*:ErrorAction'] = 'Stop'
 # Relevant file paths used by this script.
 $RootDir = Split-Path $PSScriptRoot -Parent
 $MsQuicVerFilePath = Join-Path $RootDir "src" "inc" "msquic.ver"
-$CreatePackageFilePath = Join-Path $RootDir ".azure" "templates" "create-package.yml"
+$CreateVPackFilePath = Join-Path $RootDir ".azure" "obtemplates" "push-vpack.yml"
 $QnsFilePath = Join-Path $RootDir ".azure" "azure-pipelines.qns.yml"
+$NugetPackageFile = Join-Path $RootDir "scripts" "package-nuget.ps1"
+$FrameworkInfoFile = Join-Path $RootDir "src" "distribution" "Info.plist"
+$VersionsWriteFile = Join-Path $RootDir "scripts" "write-versions.ps1"
 
 # Get the current version number from the msquic.ver file.
 $VerMajor = (Select-String -Path $MsQuicVerFilePath "#define VER_MAJOR (.*)" -AllMatches).Matches[0].Groups[1].Value
@@ -57,6 +60,20 @@ Write-Host "    New version: $NewVerMajor.$NewVerMinor.$NewVerPatch"
     -replace "minorVer: (.*)", "minorVer: $NewVerMinor" `
     -replace "patchVer: (.*)", "patchVer: $NewVerPatch" |`
     Out-File $CreatePackageFilePath
+(Get-Content $CreateVPackFilePath) `
+    -replace "majorVer: (.*)", "majorVer: $NewVerMajor" `
+    -replace "minorVer: (.*)", "minorVer: $NewVerMinor" `
+    -replace "patchVer: (.*)", "patchVer: $NewVerPatch" |`
+    Out-File $CreateVPackFilePath
 (Get-Content $QnsFilePath) `
     -replace "$VerMajor.$VerMinor.$VerPatch", "$NewVerMajor.$NewVerMinor.$NewVerPatch" |`
     Out-File $QnsFilePath
+(Get-Content $NugetPackageFile) `
+    -replace "$VerMajor.$VerMinor.$VerPatch", "$NewVerMajor.$NewVerMinor.$NewVerPatch" |`
+    Out-File $NugetPackageFile
+(Get-Content $FrameworkInfoFile) `
+    -replace "$VerMajor.$VerMinor.$VerPatch", "$NewVerMajor.$NewVerMinor.$NewVerPatch" |`
+    Out-File $FrameworkInfoFile
+(Get-Content $VersionsWriteFile) `
+    -replace "$VerMajor.$VerMinor.$VerPatch", "$NewVerMajor.$NewVerMinor.$NewVerPatch" |`
+    Out-File $VersionsWriteFile

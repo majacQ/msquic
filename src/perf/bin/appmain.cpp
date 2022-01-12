@@ -39,14 +39,15 @@ QuicHandleRpsClient(
         return QUIC_STATUS_INVALID_PARAMETER;
     }
     uint32_t RunTime;
-    uint32_t CachedCompletedRequests;
+    uint64_t CachedCompletedRequests;
     CxPlatCopyMemory(&RunTime, ExtraData, sizeof(RunTime));
     ExtraData += sizeof(RunTime);
     CxPlatCopyMemory(&CachedCompletedRequests, ExtraData, sizeof(CachedCompletedRequests));
     ExtraData += sizeof(CachedCompletedRequests);
+    CXPLAT_FRE_ASSERT(CachedCompletedRequests <= UINT32_MAX);
     uint32_t RestOfBufferLength = Length - sizeof(RunTime) - sizeof(CachedCompletedRequests);
     RestOfBufferLength &= 0xFFFFFFFC; // Round down to nearest multiple of 4
-    uint32_t MaxCount = min(CachedCompletedRequests, RestOfBufferLength);
+    uint32_t MaxCount = CXPLAT_MIN((uint32_t)CachedCompletedRequests, RestOfBufferLength);
 
     uint32_t RPS = (uint32_t)((CachedCompletedRequests * 1000ull) / (uint64_t)RunTime);
     if (RPS == 0) {
@@ -158,12 +159,12 @@ QuicUserMain(
         Status = QuicHandleRpsClient(Buffer.get(), Metadata.ExtraDataLength, FileName);
     }
 
-    printf("App Main returning status %d\n", Status);
     QuicMainFree();
+    printf("App Main returning status %d\n", Status);
     return Status;
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(QUIC_RESTRICTED_BUILD)
 
 QUIC_STATUS
 QuicKernelMain(
@@ -370,6 +371,7 @@ main(
     _In_ int argc,
     _In_reads_(argc) _Null_terminated_ char* argv[]
     ) {
+    QUIC_STATUS Status = QUIC_STATUS_SUCCESS;
     const QUIC_CREDENTIAL_CONFIG* SelfSignedCredConfig = nullptr;
     QUIC_STATUS RetVal = 0;
     bool KeyboardWait = false;
@@ -387,15 +389,16 @@ main(
     int ArgCount = 0;
 
     CxPlatSystemLoad();
-    if (QUIC_FAILED(CxPlatInitialize())) {
+    if (QUIC_FAILED(Status = CxPlatInitialize())) {
         printf("Platform failed to initialize\n");
-        goto Exit;
+        CxPlatSystemUnload();
+        return Status;
     }
 
     for (int i = 0; i < argc; ++i) {
 
         if (_strnicmp(argv[i] + 1, DriverSearch, DriverLen) == 0) {
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(QUIC_RESTRICTED_BUILD)
             //
             // See if private driver
             //
@@ -435,7 +438,7 @@ main(
     }
 
     if (DriverName != nullptr) {
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(QUIC_RESTRICTED_BUILD)
         printf("Entering kernel mode main\n");
         RetVal = QuicKernelMain(ArgCount, ArgValues.get(), KeyboardWait, SelfSignedCredConfig, PrivateTestLibrary, DriverName, FileName);
 #else

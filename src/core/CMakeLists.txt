@@ -18,12 +18,14 @@ set(SOURCES
     connection.c
     crypto.c
     crypto_tls.c
+    cubic.c
     datagram.c
     frame.c
     library.c
     listener.c
     lookup.c
     loss_detection.c
+    mtu_discovery.c
     operation.c
     packet.c
     packet_builder.c
@@ -52,19 +54,17 @@ if(NOT "${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
     set(SOURCES ${SOURCES} inline.c)
 endif()
 
-# Allow CLOG to preprocess all the source files.
-add_clog_library(core.clog DYNAMIC ${SOURCES})
-if(QUIC_ENABLE_LOGGING)
-    set_property(TARGET core.clog.provider PROPERTY FOLDER "helpers")
-endif()
-
 add_library(core STATIC ${SOURCES})
 
-target_link_libraries(core PUBLIC core.clog inc)
+if(NOT QUIC_BUILD_SHARED)
+    target_compile_definitions(core PUBLIC QUIC_BUILD_STATIC)
+endif()
 
-target_link_libraries(core PRIVATE warnings)
+target_link_libraries(core PUBLIC inc)
 
-set_property(TARGET core PROPERTY FOLDER "libraries")
+target_link_libraries(core PRIVATE warnings main_binary_link_args)
+
+set_property(TARGET core PROPERTY FOLDER "${QUIC_FOLDER_PREFIX}libraries")
 
 if (MSVC AND NOT QUIC_ENABLE_SANITIZERS)
     target_compile_options(core PRIVATE /analyze)

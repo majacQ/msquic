@@ -38,13 +38,13 @@ Environment:
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <msquic_posix.h>
+#include "msquic_posix.h"
 #include <stdbool.h>
 #include <pthread.h>
 #include <errno.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
-#include <quic_sal_stub.h>
+#include "quic_sal_stub.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -61,40 +61,12 @@ extern "C" {
     (ALIGN_DOWN(((unsigned long)(length) + sizeof(type) - 1), type))
 
 //
-// Library Initialization routines.
-//
-
-void
-CxPlatSystemLoad(
-    void
-    );
-
-void
-CxPlatSystemUnload(
-    void
-    );
-
-QUIC_STATUS
-CxPlatInitialize(
-    void
-    );
-
-void
-CxPlatUninitialize(
-    void
-    );
-
-//
 // Generic stuff.
 //
 
 #define INVALID_SOCKET ((int)(-1))
 
 #define SOCKET_ERROR (-1)
-
-#define max(a,b) (((a) > (b)) ? (a) : (b))
-
-#define min(a,b) (((a) < (b)) ? (a) : (b))
 
 #define ARRAYSIZE(A) (sizeof(A)/sizeof((A)[0]))
 
@@ -116,6 +88,12 @@ CxPlatUninitialize(
 // Interlocked implementations.
 //
 
+#ifdef CX_PLATFORM_DARWIN
+#define YieldProcessor()
+#else
+#define YieldProcessor() pthread_yield()
+#endif
+
 inline
 long
 InterlockedIncrement(
@@ -135,6 +113,26 @@ InterlockedDecrement(
 }
 
 inline
+long
+InterlockedAnd(
+    _Inout_ _Interlocked_operand_ long volatile *Destination,
+    _In_ long Value
+    )
+{
+    return __sync_and_and_fetch(Destination, Value);
+}
+
+inline
+long
+InterlockedOr(
+    _Inout_ _Interlocked_operand_ long volatile *Destination,
+    _In_ long Value
+    )
+{
+    return __sync_or_and_fetch(Destination, Value);
+}
+
+inline
 int64_t
 InterlockedExchangeAdd64(
     _Inout_ _Interlocked_operand_ int64_t volatile *Addend,
@@ -150,6 +148,17 @@ InterlockedCompareExchange16(
     _Inout_ _Interlocked_operand_ short volatile *Destination,
     _In_ short ExChange,
     _In_ short Comperand
+    )
+{
+    return __sync_val_compare_and_swap(Destination, Comperand, ExChange);
+}
+
+inline
+short
+InterlockedCompareExchange(
+    _Inout_ _Interlocked_operand_ long volatile *Destination,
+    _In_ long ExChange,
+    _In_ long Comperand
     )
 {
     return __sync_val_compare_and_swap(Destination, Comperand, ExChange);
@@ -193,6 +202,8 @@ InterlockedIncrement64(
     return __sync_add_and_fetch(Addend, (int64_t)1);
 }
 
+#define QuicReadPtrNoFence(p) ((void*)(*p)) // TODO
+
 //
 // Assertion interfaces.
 //
@@ -200,7 +211,9 @@ InterlockedIncrement64(
 __attribute__((noinline, noreturn))
 void
 quic_bugcheck(
-    void
+    _In_z_ const char* File,
+    _In_ int Line,
+    _In_z_ const char* Expr
     );
 
 void
@@ -213,7 +226,7 @@ CxPlatLogAssert(
 #define CXPLAT_STATIC_ASSERT(X,Y) static_assert(X, Y);
 #define CXPLAT_ANALYSIS_ASSERT(X)
 #define CXPLAT_ANALYSIS_ASSUME(X)
-#define CXPLAT_FRE_ASSERT(exp) ((exp) ? (void)0 : (CxPlatLogAssert(__FILE__, __LINE__, #exp), quic_bugcheck()));
+#define CXPLAT_FRE_ASSERT(exp) ((exp) ? (void)0 : (CxPlatLogAssert(__FILE__, __LINE__, #exp), quic_bugcheck(__FILE__, __LINE__, #exp)));
 #define CXPLAT_FRE_ASSERTMSG(exp, Y) CXPLAT_FRE_ASSERT(exp)
 
 #ifdef DEBUG
@@ -925,15 +938,10 @@ CxPlatCurThreadID(
 // Processor Count and Index.
 //
 
-uint32_t
-CxPlatProcMaxCount(
-    void
-    );
+extern uint32_t CxPlatProcessorCount;
 
-uint32_t
-CxPlatProcActiveCount(
-    void
-    );
+#define CxPlatProcMaxCount() CxPlatProcessorCount
+#define CxPlatProcActiveCount() CxPlatProcessorCount
 
 uint32_t
 CxPlatProcCurrentNumber(

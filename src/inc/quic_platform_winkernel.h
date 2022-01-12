@@ -30,6 +30,7 @@ Environment:
 #pragma warning(disable:26071)
 #pragma warning(disable:28118)
 #pragma warning(disable:28196)
+#pragma warning(disable:28251)
 #pragma warning(disable:28252)
 #pragma warning(disable:28253)
 #pragma warning(disable:28309)
@@ -41,7 +42,7 @@ Environment:
 #include <wsk.h>
 #include <bcrypt.h>
 #include <intrin.h>
-#include <msquic_winkernel.h>
+#include "msquic_winkernel.h"
 #pragma warning(pop)
 
 #if defined(__cplusplus)
@@ -97,53 +98,6 @@ ZwQueryInformationThread (
 #define QUIC_CACHEALIGN DECLSPEC_CACHEALIGN
 
 #define INIT_NO_SAL(X) // No-op since Windows supports SAL
-
-//
-// Library Initialization
-//
-
-//
-// Called in DLLMain or DriverEntry.
-//
-INITCODE
-_IRQL_requires_max_(PASSIVE_LEVEL)
-void
-CxPlatSystemLoad(
-    _In_ PDRIVER_OBJECT DriverObject,
-    _In_ PUNICODE_STRING RegistryPath
-    );
-
-//
-// Called in DLLMain or DriverUnload.
-//
-PAGEDX
-_IRQL_requires_max_(PASSIVE_LEVEL)
-void
-CxPlatSystemUnload(
-    void
-    );
-
-//
-// Initializes the PAL library. Calls to this and
-// CxPlatformUninitialize must be serialized and cannot overlap.
-//
-PAGEDX
-_IRQL_requires_max_(PASSIVE_LEVEL)
-QUIC_STATUS
-CxPlatInitialize(
-    void
-    );
-
-//
-// Uninitializes the PAL library. Calls to this and
-// CxPlatformInitialize must be serialized and cannot overlap.
-//
-PAGEDX
-_IRQL_requires_max_(PASSIVE_LEVEL)
-void
-CxPlatUninitialize(
-    void
-    );
 
 //
 // Static Analysis Interfaces
@@ -295,57 +249,12 @@ typedef LOOKASIDE_LIST_EX CXPLAT_POOL;
 // Locking Interfaces
 //
 
-//
-// The following declares several currently unpublished shared locking
-// functions from Windows.
-//
-
-__drv_maxIRQL(APC_LEVEL)
-__drv_mustHoldCriticalRegion
-NTKERNELAPI
-VOID
-FASTCALL
-ExfAcquirePushLockExclusive(
-    __inout __deref __drv_acquiresExclusiveResource(ExPushLockType)
-    PEX_PUSH_LOCK PushLock
-    );
-
-__drv_maxIRQL(APC_LEVEL)
-__drv_mustHoldCriticalRegion
-NTKERNELAPI
-VOID
-FASTCALL
-ExfAcquirePushLockShared(
-    __inout __deref __drv_acquiresExclusiveResource(ExPushLockType)
-    PEX_PUSH_LOCK PushLock
-    );
-
-__drv_maxIRQL(DISPATCH_LEVEL)
-__drv_mustHoldCriticalRegion
-NTKERNELAPI
-VOID
-FASTCALL
-ExfReleasePushLockExclusive(
-    __inout __deref __drv_releasesExclusiveResource(ExPushLockType)
-    PEX_PUSH_LOCK PushLock
-    );
-
-__drv_maxIRQL(DISPATCH_LEVEL)
-__drv_mustHoldCriticalRegion
-NTKERNELAPI
-VOID
-FASTCALL
-ExfReleasePushLockShared(
-    __inout __deref __drv_releasesExclusiveResource(ExPushLockType)
-    PEX_PUSH_LOCK PushLock
-    );
-
 typedef EX_PUSH_LOCK CXPLAT_LOCK;
 
 #define CxPlatLockInitialize(Lock) ExInitializePushLock(Lock)
 #define CxPlatLockUninitialize(Lock)
-#define CxPlatLockAcquire(Lock) KeEnterCriticalRegion(); ExfAcquirePushLockExclusive(Lock)
-#define CxPlatLockRelease(Lock) ExfReleasePushLockExclusive(Lock); KeLeaveCriticalRegion()
+#define CxPlatLockAcquire(Lock) KeEnterCriticalRegion(); ExAcquirePushLockExclusive(Lock)
+#define CxPlatLockRelease(Lock) ExReleasePushLockExclusive(Lock); KeLeaveCriticalRegion()
 
 typedef struct CXPLAT_DISPATCH_LOCK {
     KSPIN_LOCK SpinLock;
@@ -365,10 +274,10 @@ typedef EX_PUSH_LOCK CXPLAT_RW_LOCK;
 
 #define CxPlatRwLockInitialize(Lock) ExInitializePushLock(Lock)
 #define CxPlatRwLockUninitialize(Lock)
-#define CxPlatRwLockAcquireShared(Lock) KeEnterCriticalRegion(); ExfAcquirePushLockShared(Lock)
-#define CxPlatRwLockAcquireExclusive(Lock) KeEnterCriticalRegion(); ExfAcquirePushLockExclusive(Lock)
-#define CxPlatRwLockReleaseShared(Lock) ExfReleasePushLockShared(Lock); KeLeaveCriticalRegion()
-#define CxPlatRwLockReleaseExclusive(Lock) ExfReleasePushLockExclusive(Lock); KeLeaveCriticalRegion()
+#define CxPlatRwLockAcquireShared(Lock) KeEnterCriticalRegion(); ExAcquirePushLockShared(Lock)
+#define CxPlatRwLockAcquireExclusive(Lock) KeEnterCriticalRegion(); ExAcquirePushLockExclusive(Lock)
+#define CxPlatRwLockReleaseShared(Lock) ExReleasePushLockShared(Lock); KeLeaveCriticalRegion()
+#define CxPlatRwLockReleaseExclusive(Lock) ExReleasePushLockExclusive(Lock); KeLeaveCriticalRegion()
 
 typedef struct CXPLAT_DISPATCH_RW_LOCK {
     EX_SPIN_LOCK SpinLock;
@@ -407,6 +316,7 @@ typedef struct CXPLAT_DISPATCH_RW_LOCK {
 #define QuicCompareExchangeLongPtrNoFence InterlockedCompareExchangeNoFence
 #define QuicReadLongPtrNoFence ReadNoFence
 #endif
+#define QuicReadPtrNoFence ReadPointerNoFence
 
 typedef LONG_PTR CXPLAT_REF_COUNT;
 
@@ -893,6 +803,17 @@ CxPlatRandom(
     _In_ uint32_t BufferLen,
     _Out_writes_bytes_(BufferLen) void* Buffer
     );
+
+//
+// Process object abstraction
+//
+#define QUIC_OWNING_PROCESS 1
+
+#define QUIC_PROCESS PEPROCESS
+
+#define QuicProcessGetCurrentProcess() ((QUIC_PROCESS)PsGetCurrentProcess())
+#define QuicProcessAddRef(Process) if (Process != NULL) { ObReferenceObjectWithTag(Process, QUIC_POOL_PROCESS); }
+#define QuicProcessRelease(Process) if (Process != NULL) { ObDereferenceObjectWithTag(Process, QUIC_POOL_PROCESS); }
 
 //
 // Silo interfaces

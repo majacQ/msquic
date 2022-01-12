@@ -392,7 +392,7 @@ ThroughputClient::StartTcp()
 {
     MsQuicCredentialConfig CredConfig(QUIC_CREDENTIAL_FLAG_CLIENT | QUIC_CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION);
     TcpConn =
-        new TcpConnection(
+        new(std::nothrow) TcpConnection(
             &Engine,
             &CredConfig,
             RemoteFamily,
@@ -412,7 +412,7 @@ ThroughputClient::StartTcp()
     TcpStrmContext->IdealSendBuffer = 1; // TCP uses send buffering, so just set to 1.
 
     if (DownloadLength) {
-        auto SendData = new TcpSendData();
+        auto SendData = new(std::nothrow) TcpSendData();
         SendData->StreamId = 0;
         SendData->Open = TRUE;
         SendData->Fin = TRUE;
@@ -438,7 +438,7 @@ ThroughputClient::SendTcpData(
         uint64_t BytesLeftToSend =
             TimedTransfer ? UINT64_MAX : (UploadLength - Context->BytesSent);
 
-        auto SendData = new TcpSendData();
+        auto SendData = new(std::nothrow) TcpSendData();
         SendData->StreamId = 0;
         SendData->Open = Context->BytesSent == 0 ? TRUE : FALSE;
         SendData->Buffer = DataBuffer->Buffer;
@@ -473,22 +473,21 @@ ThroughputClient::OnStreamShutdownComplete(
     uint64_t ElapsedMicroseconds = StrmContext->EndTime - StrmContext->StartTime;
     uint32_t SendRate = (uint32_t)((StrmContext->BytesCompleted * 1000 * 1000 * 8) / (1000 * ElapsedMicroseconds));
 
-    if (StrmContext->Complete) {
+    if (!StrmContext->Complete && StrmContext->BytesCompleted == 0) {
+        WriteOutput("Error: Did not complete any bytes! Failed to connect?\n");
+    } else {
         WriteOutput(
             "Result: %llu bytes @ %u kbps (%u.%03u ms).\n",
             (unsigned long long)StrmContext->BytesCompleted,
             SendRate,
             (uint32_t)(ElapsedMicroseconds / 1000),
             (uint32_t)(ElapsedMicroseconds % 1000));
-    } else if (StrmContext->BytesCompleted) {
-        WriteOutput(
-            "Error: Did not complete all bytes! %llu bytes @ %u kbps (%u.%03u ms).\n",
-            (unsigned long long)StrmContext->BytesCompleted,
-            SendRate,
-            (uint32_t)(ElapsedMicroseconds / 1000),
-            (uint32_t)(ElapsedMicroseconds % 1000));
-    } else {
-        WriteOutput("Error: Did not complete any bytes! Failed to connect?\n");
+        if (!StrmContext->Complete) {
+            WriteOutput(
+                "Warning: Did not complete all bytes (sent: %llu, completed: %llu).\n",
+                (unsigned long long)StrmContext->BytesSent,
+                (unsigned long long)StrmContext->BytesCompleted);
+        }
     }
 
     StreamContextAllocator.Free(StrmContext);
@@ -619,7 +618,7 @@ ThroughputClient::TcpReceiveCallback(
         StrmContext->BytesCompleted += Length;
         if (This->TimedTransfer) {
             if (CxPlatTimeDiff64(StrmContext->StartTime, CxPlatTimeUs64()) >= MS_TO_US(This->DownloadLength)) {
-                auto SendData = new TcpSendData();
+                auto SendData = new(std::nothrow) TcpSendData();
                 SendData->StreamId = 0;
                 SendData->Abort = TRUE;
                 SendData->Buffer = This->DataBuffer->Buffer;

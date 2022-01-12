@@ -9,8 +9,9 @@ Abstract:
 
 --*/
 
-#include <quic_platform.h>
-#include <MsQuicTests.h>
+#include "quic_platform.h"
+#include "MsQuicTests.h"
+#include <new.h>
 
 #include "quic_trace.h"
 #ifdef QUIC_CLOG
@@ -79,7 +80,7 @@ QuicTestCtlInitialize(
     WDF_IO_QUEUE_CONFIG QueueConfig;
     WDFQUEUE Queue;
 
-    MsQuic = new MsQuicApi();
+    MsQuic = new (std::nothrow) MsQuicApi();
     if (!MsQuic) {
         goto Error;
     }
@@ -239,7 +240,7 @@ QuicTestCtlEvtFileCreate(
     PAGED_CODE();
 
     KeEnterGuardedRegion();
-    ExfAcquirePushLockExclusive(&QuicTestCtlExtension->Lock);
+    ExAcquirePushLockExclusive(&QuicTestCtlExtension->Lock);
 
     do
     {
@@ -282,7 +283,7 @@ QuicTestCtlEvtFileCreate(
     }
     while (false);
 
-    ExfReleasePushLockExclusive(&QuicTestCtlExtension->Lock);
+    ExReleasePushLockExclusive(&QuicTestCtlExtension->Lock);
     KeLeaveGuardedRegion();
 
     WdfRequestComplete(Request, Status);
@@ -312,7 +313,7 @@ QuicTestCtlEvtFileCleanup(
     QUIC_TEST_CLIENT* Client = QuicTestCtlGetFileContext(FileObject);
     if (Client != nullptr) {
 
-        ExfAcquirePushLockExclusive(&QuicTestCtlExtension->Lock);
+        ExAcquirePushLockExclusive(&QuicTestCtlExtension->Lock);
 
         //
         // Remove the device client from the list
@@ -320,7 +321,7 @@ QuicTestCtlEvtFileCleanup(
         RemoveEntryList(&Client->Link);
         QuicTestCtlExtension->ClientListSize--;
 
-        ExfReleasePushLockExclusive(&QuicTestCtlExtension->Lock);
+        ExReleasePushLockExclusive(&QuicTestCtlExtension->Lock);
 
         QuicTraceLogInfo(
             TestControlClientCleaningUp,
@@ -394,8 +395,8 @@ size_t QUIC_IOCTL_BUFFER_SIZES[] =
     sizeof(INT32),
     0,
     sizeof(UINT8),
-    0,
-    0,
+    sizeof(uint32_t),
+    sizeof(uint32_t),
     sizeof(INT32),
     sizeof(QUIC_RUN_KEY_UPDATE_PARAMS),
     0,
@@ -410,8 +411,8 @@ size_t QUIC_IOCTL_BUFFER_SIZES[] =
     0,
     sizeof(QUIC_RUN_DATAGRAM_NEGOTIATION),
     sizeof(INT32),
-    sizeof(INT32),
-    sizeof(INT32),
+    sizeof(QUIC_RUN_REBIND_PARAMS),
+    sizeof(QUIC_RUN_REBIND_PARAMS),
     sizeof(INT32),
     sizeof(INT32),
     0,
@@ -434,6 +435,23 @@ size_t QUIC_IOCTL_BUFFER_SIZES[] =
     sizeof(QUIC_RUN_CRED_VALIDATION),
     sizeof(QUIC_ABORT_RECEIVE_TYPE),
     sizeof(QUIC_RUN_KEY_UPDATE_RANDOM_LOSS_PARAMS),
+    0,
+    0,
+    0,
+    sizeof(QUIC_RUN_MTU_DISCOVERY_PARAMS),
+    sizeof(INT32),
+    sizeof(INT32),
+    0,
+    0,
+    sizeof(INT32),
+    0,
+    sizeof(UINT8),
+    sizeof(INT32),
+    0,
+    0,
+    0,
+    0,
+    0,
     0,
     0
 };
@@ -463,6 +481,10 @@ typedef union {
     QUIC_RUN_CRED_VALIDATION CredValidationParams;
     QUIC_ABORT_RECEIVE_TYPE AbortReceiveType;
     QUIC_RUN_KEY_UPDATE_RANDOM_LOSS_PARAMS KeyUpdateRandomLossParams;
+    QUIC_RUN_MTU_DISCOVERY_PARAMS MtuDiscoveryParams;
+    uint32_t Test;
+    QUIC_RUN_REBIND_PARAMS RebindParams;
+    UINT8 RejectByClosing;
 
 } QUIC_IOCTL_PARAMS;
 
@@ -653,7 +675,7 @@ QuicTestCtlEvtIoDeviceControl(
                 Params->Params1.ServerStatelessRetry != 0,
                 Params->Params1.ClientUsesOldVersion != 0,
                 Params->Params1.MultipleALPNs != 0,
-                Params->Params1.AsyncConfiguration != 0,
+                (QUIC_TEST_ASYNC_CONFIG_MODE)Params->Params1.AsyncConfiguration,
                 Params->Params1.MultiPacketClientInitial != 0,
                 (QUIC_TEST_RESUMPTION_MODE)Params->Params1.SessionResumption,
                 Params->Params1.RandomLossPercentage
@@ -711,11 +733,13 @@ QuicTestCtlEvtIoDeviceControl(
         break;
 
     case IOCTL_QUIC_RUN_VALIDATE_CONNECTION_EVENTS:
-        QuicTestCtlRun(QuicTestValidateConnectionEvents());
+        CXPLAT_FRE_ASSERT(Params != nullptr);
+        QuicTestCtlRun(QuicTestValidateConnectionEvents(Params->Test));
         break;
 
     case IOCTL_QUIC_RUN_VALIDATE_STREAM_EVENTS:
-        QuicTestCtlRun(QuicTestValidateStreamEvents());
+        CXPLAT_FRE_ASSERT(Params != nullptr);
+        QuicTestCtlRun(QuicTestValidateStreamEvents(Params->Test));
         break;
 
     case IOCTL_QUIC_RUN_VERSION_NEGOTIATION:
@@ -826,14 +850,16 @@ QuicTestCtlEvtIoDeviceControl(
         CXPLAT_FRE_ASSERT(Params != nullptr);
         QuicTestCtlRun(
             QuicTestNatPortRebind(
-                Params->Family));
+                Params->RebindParams.Family,
+                Params->RebindParams.Padding));
         break;
 
     case IOCTL_QUIC_RUN_NAT_ADDR_REBIND:
         CXPLAT_FRE_ASSERT(Params != nullptr);
         QuicTestCtlRun(
             QuicTestNatAddrRebind(
-                Params->Family));
+                Params->RebindParams.Family,
+                Params->RebindParams.Padding));
         break;
 
     case IOCTL_QUIC_RUN_CHANGE_MAX_STREAM_ID:
@@ -1038,6 +1064,85 @@ QuicTestCtlEvtIoDeviceControl(
 
     case IOCTL_QUIC_RUN_NTH_ALLOC_FAIL:
         QuicTestCtlRun(QuicTestNthAllocFail());
+        break;
+
+    case IOCTL_QUIC_RUN_MTU_SETTINGS:
+        QuicTestCtlRun(QuicTestMtuSettings());
+        break;
+
+    case IOCTL_QUIC_RUN_MTU_DISCOVERY:
+        CXPLAT_FRE_ASSERT(Params != nullptr);
+        QuicTestCtlRun(
+            QuicTestMtuDiscovery(
+                Params->MtuDiscoveryParams.Family,
+                Params->MtuDiscoveryParams.DropClientProbePackets,
+                Params->MtuDiscoveryParams.DropServerProbePackets,
+                Params->MtuDiscoveryParams.RaiseMinimumMtu));
+        break;
+
+    case IOCTL_QUIC_RUN_LOAD_BALANCED_HANDSHAKE:
+        CXPLAT_FRE_ASSERT(Params != nullptr);
+        QuicTestCtlRun(QuicTestLoadBalancedHandshake(Params->Family));
+        break;
+
+    case IOCTL_QUIC_RUN_CLIENT_SHARED_LOCAL_PORT:
+        CXPLAT_FRE_ASSERT(Params != nullptr);
+        QuicTestCtlRun(QuicTestClientSharedLocalPort(Params->Family));
+        break;
+
+    case IOCTL_QUIC_RUN_VALIDATE_PARAM_API:
+        QuicTestCtlRun(QuicTestValidateParamApi());
+        break;
+
+    case IOCTL_QUIC_RUN_STREAM_PRIORITY:
+        QuicTestCtlRun(QuicTestStreamPriority());
+        break;
+
+    case IOCTL_QUIC_RUN_CLIENT_LOCAL_PATH_CHANGES:
+        CXPLAT_FRE_ASSERT(Params != nullptr);
+        QuicTestCtlRun(QuicTestLocalPathChanges(Params->Family));
+        break;
+
+    case IOCTL_QUIC_RUN_STREAM_DIFFERENT_ABORT_ERRORS:
+        QuicTestCtlRun(QuicTestStreamDifferentAbortErrors());
+        break;
+
+    case IOCTL_QUIC_RUN_CONNECTION_REJECTION:
+        CXPLAT_FRE_ASSERT(Params != nullptr);
+        QuicTestCtlRun(QuicTestConnectionRejection(Params->RejectByClosing));
+        break;
+
+    case IOCTL_QUIC_RUN_INTERFACE_BINDING:
+        CXPLAT_FRE_ASSERT(Params != nullptr);
+        QuicTestCtlRun(QuicTestInterfaceBinding(Params->Family));
+        break;
+
+    case IOCTL_QUIC_RUN_CONNECT_INVALID_ADDRESS:
+        QuicTestCtlRun(QuicTestConnectInvalidAddress());
+        break;
+
+    case IOCTL_QUIC_RUN_STREAM_ABORT_RECV_FIN_RACE:
+        QuicTestCtlRun(QuicTestStreamAbortRecvFinRace());
+        break;
+
+    case IOCTL_QUIC_RUN_STREAM_ABORT_CONN_FLOW_CONTROL:
+        QuicTestCtlRun(QuicTestStreamAbortConnFlowControl());
+        break;
+
+    case IOCTL_QUIC_RUN__REG_SHUTDOWN_BEFORE_OPEN:
+        QuicTestCtlRun(QuicTestRegistrationShutdownBeforeConnOpen());
+        break;
+
+    case IOCTL_QUIC_RUN_REG_SHUTDOWN_AFTER_OPEN:
+        QuicTestCtlRun(QuicTestRegistrationShutdownAfterConnOpen());
+        break;
+
+    case IOCTL_QUIC_RUN_REG_SHUTDOWN_AFTER_OPEN_BEFORE_START:
+        QuicTestCtlRun(QuicTestRegistrationShutdownAfterConnOpenBeforeStart());
+        break;
+
+    case IOCTL_QUIC_RUN_REG_SHUTDOWN_AFTER_OPEN_AND_START:
+        QuicTestCtlRun(QuicTestRegistrationShutdownAfterConnOpenAndStart());
         break;
 
     default:

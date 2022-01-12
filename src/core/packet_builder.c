@@ -208,6 +208,9 @@ QuicPacketBuilderPrepare(
     // the current one doesn't match, finalize it and then start a new one.
     //
 
+    uint32_t Proc = CxPlatProcCurrentNumber();
+    uint64_t ProcShifted = ((uint64_t)Proc + 1) << 40;
+
     BOOLEAN NewQuicPacket = FALSE;
     if (Builder->PacketType != NewPacketType || IsPathMtuDiscovery ||
         (Builder->Datagram != NULL && (Builder->Datagram->Length - Builder->DatagramLength) < QUIC_MIN_PACKET_SPARE_SPACE)) {
@@ -240,6 +243,8 @@ QuicPacketBuilderPrepare(
         //
         BOOLEAN SendDataAllocated = FALSE;
         if (Builder->SendData == NULL) {
+            Builder->BatchId =
+                ProcShifted | InterlockedIncrement64((int64_t*)&MsQuicLib.PerProc[Proc].SendBatchId);
             Builder->SendData =
                 CxPlatSendDataAlloc(
                     Builder->Path->Binding->Socket,
@@ -247,8 +252,9 @@ QuicPacketBuilderPrepare(
                     IsPathMtuDiscovery ?
                         0 :
                         MaxUdpPayloadSizeForFamily(
-                            QuicAddrGetFamily(&Builder->Path->RemoteAddress),
-                            DatagramSize));
+                            QuicAddrGetFamily(&Builder->Path->Route.RemoteAddress),
+                            DatagramSize),
+                    &Builder->Path->Route);
             if (Builder->SendData == NULL) {
                 QuicTraceEvent(
                     AllocFailure,
@@ -262,8 +268,8 @@ QuicPacketBuilderPrepare(
 
         uint16_t NewDatagramLength =
             MaxUdpPayloadSizeForFamily(
-                QuicAddrGetFamily(&Builder->Path->RemoteAddress),
-                IsPathMtuDiscovery ? CXPLAT_MAX_MTU : DatagramSize);
+                QuicAddrGetFamily(&Builder->Path->Route.RemoteAddress),
+                IsPathMtuDiscovery ? Builder->Path->MtuDiscovery.ProbeSize : DatagramSize);
         if ((Connection->PeerTransportParams.Flags & QUIC_TP_FLAG_MAX_UDP_PAYLOAD_SIZE) &&
             NewDatagramLength > Connection->PeerTransportParams.MaxUdpPayloadSize) {
             NewDatagramLength = (uint16_t)Connection->PeerTransportParams.MaxUdpPayloadSize;
@@ -289,7 +295,7 @@ QuicPacketBuilderPrepare(
         Builder->DatagramLength = 0;
         Builder->MinimumDatagramLength = 0;
 
-        if (IsTailLossProbe && !QuicConnIsServer(Connection)) {
+        if (IsTailLossProbe && QuicConnIsClient(Connection)) {
             if (NewPacketType == SEND_PACKET_SHORT_HEADER_TYPE) {
                 //
                 // Short header (1-RTT) packets need to be padded enough to
@@ -313,8 +319,8 @@ QuicPacketBuilderPrepare(
             //
             Builder->MinimumDatagramLength =
                 MaxUdpPayloadSizeForFamily(
-                    QuicAddrGetFamily(&Builder->Path->RemoteAddress),
-                    QUIC_INITIAL_PACKET_LENGTH);
+                    QuicAddrGetFamily(&Builder->Path->Route.RemoteAddress),
+                    Builder->Path->Mtu);
 
             if ((uint32_t)Builder->MinimumDatagramLength > Builder->Datagram->Length) {
                 //
@@ -346,11 +352,19 @@ QuicPacketBuilderPrepare(
             Builder->EncryptionOverhead = 0;
         }
 
+        Builder->Metadata->PacketId =
+            ProcShifted | InterlockedIncrement64((int64_t*)&MsQuicLib.PerProc[Proc].SendPacketId);
+        QuicTraceEvent(
+            PacketCreated,
+            "[pack][%llu] Created in batch %llu",
+            Builder->Metadata->PacketId,
+            Builder->BatchId);
+
         Builder->Metadata->FrameCount = 0;
         Builder->Metadata->PacketNumber = Connection->Send.NextPacketNumber++;
         Builder->Metadata->Flags.KeyType = NewPacketKeyType;
         Builder->Metadata->Flags.IsAckEliciting = FALSE;
-        Builder->Metadata->Flags.IsPMTUD = IsPathMtuDiscovery;
+        Builder->Metadata->Flags.IsMtuProbe = IsPathMtuDiscovery;
         Builder->Metadata->Flags.SuspectedLost = FALSE;
 #if DEBUG
         Builder->Metadata->Flags.Freed = FALSE;
@@ -532,7 +546,7 @@ QuicPacketBuilderPrepareForControlFrames(
     _In_ uint32_t SendFlags
     )
 {
-    CXPLAT_DBG_ASSERT(!(SendFlags & QUIC_CONN_SEND_FLAG_PMTUD));
+    CXPLAT_DBG_ASSERT(!(SendFlags & QUIC_CONN_SEND_FLAG_DPLPMTUD));
     QUIC_PACKET_KEY_TYPE PacketKeyType;
     return
         QuicPacketBuilderGetPacketTypeAndKeyForControlFrames(
@@ -631,7 +645,7 @@ QuicPacketBuilderFinalizeHeaderProtection(
 // off.
 //
 _IRQL_requires_max_(PASSIVE_LEVEL)
-void
+BOOLEAN
 QuicPacketBuilderFinalize(
     _Inout_ QUIC_PACKET_BUILDER* Builder,
     _In_ BOOLEAN FlushBatchedDatagrams
@@ -639,6 +653,7 @@ QuicPacketBuilderFinalize(
 {
     QUIC_CONNECTION* Connection = Builder->Connection;
     BOOLEAN FinalQuicPacket = FALSE;
+    BOOLEAN CanKeepSending = TRUE;
 
     QuicPacketBuilderValidate(Builder, FALSE);
 
@@ -651,11 +666,16 @@ QuicPacketBuilderFinalize(
             --Connection->Send.NextPacketNumber;
             Builder->DatagramLength -= Builder->HeaderLength;
             Builder->HeaderLength = 0;
+            CanKeepSending = FALSE;
 
             if (Builder->DatagramLength == 0) {
                 CxPlatSendDataFreeBuffer(Builder->SendData, Builder->Datagram);
                 Builder->Datagram = NULL;
             }
+        }
+        if (Builder->Path->Allowance != UINT32_MAX) {
+            QuicConnAddOutFlowBlockedReason(
+                Connection, QUIC_FLOW_BLOCKED_AMPLIFICATION_PROT);
         }
         FinalQuicPacket = FlushBatchedDatagrams && (Builder->TotalCountDatagrams != 0);
         goto Exit;
@@ -752,6 +772,11 @@ QuicPacketBuilderFinalize(
         //
         // Encrypt the data.
         //
+
+        QuicTraceEvent(
+            PacketEncrypt,
+            "[pack][%llu] Encrypting",
+            Builder->Metadata->PacketId);
 
         PayloadLength += Builder->EncryptionOverhead;
         Builder->DatagramLength += Builder->EncryptionOverhead;
@@ -871,6 +896,10 @@ QuicPacketBuilderFinalize(
     Builder->Metadata->SentTime = CxPlatTimeUs32();
     Builder->Metadata->PacketLength =
         Builder->HeaderLength + PayloadLength;
+    QuicTraceEvent(
+        PacketFinalize,
+        "[pack][%llu] Finalizing",
+        Builder->Metadata->PacketId);
 
     QuicTraceEvent(
         ConnPacketSent,
@@ -921,6 +950,10 @@ Exit:
             CXPLAT_DBG_ASSERT(Builder->TotalCountDatagrams > 0);
             QuicPacketBuilderSendBatch(Builder);
             CXPLAT_DBG_ASSERT(Builder->Metadata->FrameCount == 0);
+            QuicTraceEvent(
+                PacketBatchSent,
+                "[pack][%llu] Batch sent",
+                Builder->BatchId);
         }
 
         if (Builder->PacketType == QUIC_RETRY) {
@@ -947,6 +980,8 @@ Exit:
     QuicPacketBuilderValidate(Builder, FALSE);
 
     CXPLAT_DBG_ASSERT(!FlushBatchedDatagrams || Builder->SendData == NULL);
+
+    return CanKeepSending;
 }
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
@@ -963,8 +998,7 @@ QuicPacketBuilderSendBatch(
 
     QuicBindingSend(
         Builder->Path->Binding,
-        &Builder->Path->LocalAddress,
-        &Builder->Path->RemoteAddress,
+        &Builder->Path->Route,
         Builder->SendData,
         Builder->TotalDatagramsLength,
         Builder->TotalCountDatagrams,

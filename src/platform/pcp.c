@@ -178,15 +178,19 @@ CxPlatPcpInitialize(
     PcpContext->ClientCallback = Handler;
     PcpContext->GatewayCount = GatewayAddressesCount;
 
+    CXPLAT_UDP_CONFIG UdpConfig = {0};
+    UdpConfig.LocalAddress = NULL;
+    UdpConfig.Flags = CXPLAT_SOCKET_FLAG_PCP;
+    UdpConfig.InterfaceIndex = 0;
+    UdpConfig.CallbackContext = PcpContext;
+
     for (uint32_t i = 0; i < GatewayAddressesCount; ++i) {
         QuicAddrSetPort(&GatewayAddresses[i], CXPLAT_PCP_PORT);
+        UdpConfig.RemoteAddress = &GatewayAddresses[i];
         Status =
             CxPlatSocketCreateUdp(
                 Datapath,
-                NULL,
-                &GatewayAddresses[i],
-                PcpContext,
-                CXPLAT_SOCKET_FLAG_PCP,
+                &UdpConfig,
                 &PcpContext->GatewaySockets[i]);
         if (QUIC_FAILED(Status)) {
             goto Exit;
@@ -261,10 +265,10 @@ CxPlatPcpProcessDatagram(
         return;
     }
 
-    CXPLAT_PCP_EVENT Event;
+    CXPLAT_PCP_EVENT Event = {0};
     CxPlatCopyMemory(Event.FAILURE.Nonce, Response->MAP.MappingNonce, CXPLAT_PCP_NONCE_LENGTH);
     QUIC_ADDR InternalAddress;
-    CxPlatCopyMemory(&InternalAddress, &Datagram->Tuple->LocalAddress, sizeof(QUIC_ADDR));
+    CxPlatCopyMemory(&InternalAddress, &Datagram->Route->LocalAddress, sizeof(QUIC_ADDR));
     InternalAddress.Ipv6.sin6_port = Response->MAP.InternalPort;
     QUIC_ADDR ExternalAddress = {0};
     QUIC_ADDR RemotePeerAddress = {0};
@@ -378,15 +382,15 @@ CxPlatPcpSendMapRequestInternal(
     _In_ uint32_t Lifetime          // Zero indicates delete Nonce must match.
     )
 {
-    QUIC_ADDR LocalAddress, RemoteAddress;
-    CxPlatSocketGetLocalAddress(Socket, &LocalAddress);
-    CxPlatSocketGetRemoteAddress(Socket, &RemoteAddress);
+    CXPLAT_ROUTE Route;
+    CxPlatSocketGetLocalAddress(Socket, &Route.LocalAddress);
+    CxPlatSocketGetRemoteAddress(Socket, &Route.RemoteAddress);
 
     QUIC_ADDR LocalMappedAddress;
-    CxPlatConvertToMappedV6(&LocalAddress, &LocalMappedAddress);
+    CxPlatConvertToMappedV6(&Route.LocalAddress, &LocalMappedAddress);
 
     CXPLAT_SEND_DATA* SendData =
-        CxPlatSendDataAlloc(Socket, CXPLAT_ECN_NON_ECT, PCP_MAP_REQUEST_SIZE);
+        CxPlatSendDataAlloc(Socket, CXPLAT_ECN_NON_ECT, PCP_MAP_REQUEST_SIZE, &Route);
     if (SendData == NULL) {
         return QUIC_STATUS_OUT_OF_MEMORY;
     }
@@ -421,8 +425,7 @@ CxPlatPcpSendMapRequestInternal(
     QUIC_STATUS Status =
         CxPlatSocketSend(
             Socket,
-            &LocalAddress,
-            &RemoteAddress,
+            &Route,
             SendData,
             (uint16_t)CxPlatProcCurrentNumber());
     if (QUIC_FAILED(Status)) {
@@ -476,18 +479,18 @@ CxPlatPcpSendPeerRequestInternal(
     _In_ uint32_t Lifetime          // Zero indicates delete. Nonce must match.
     )
 {
-    QUIC_ADDR LocalAddress, RemoteAddress;
-    CxPlatSocketGetLocalAddress(Socket, &LocalAddress);
-    CxPlatSocketGetRemoteAddress(Socket, &RemoteAddress);
+    CXPLAT_ROUTE Route;
+    CxPlatSocketGetLocalAddress(Socket, &Route.LocalAddress);
+    CxPlatSocketGetRemoteAddress(Socket, &Route.RemoteAddress);
 
     QUIC_ADDR LocalMappedAddress;
-    CxPlatConvertToMappedV6(&LocalAddress, &LocalMappedAddress);
+    CxPlatConvertToMappedV6(&Route.LocalAddress, &LocalMappedAddress);
 
     QUIC_ADDR RemotePeerMappedAddress;
     CxPlatConvertToMappedV6(RemotePeerAddress, &RemotePeerMappedAddress);
 
     CXPLAT_SEND_DATA* SendData =
-        CxPlatSendDataAlloc(Socket, CXPLAT_ECN_NON_ECT, PCP_PEER_REQUEST_SIZE);
+        CxPlatSendDataAlloc(Socket, CXPLAT_ECN_NON_ECT, PCP_PEER_REQUEST_SIZE, &Route);
     if (SendData == NULL) {
         return QUIC_STATUS_OUT_OF_MEMORY;
     }
@@ -527,8 +530,7 @@ CxPlatPcpSendPeerRequestInternal(
     QUIC_STATUS Status =
         CxPlatSocketSend(
             Socket,
-            &LocalAddress,
-            &RemoteAddress,
+            &Route,
             SendData,
             (uint16_t)CxPlatProcCurrentNumber());
     if (QUIC_FAILED(Status)) {

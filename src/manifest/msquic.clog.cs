@@ -22,7 +22,7 @@ namespace msquic.clog_config
             }
 
             int si_family = value[0] | ((ushort)value[1] << 8);
-            int sin_port = value[2] | ((ushort)value[3] << 8);
+            int sin_port = value[3] | ((ushort)value[2] << 8);
 
             byte[] sa2;
 
@@ -91,7 +91,6 @@ namespace msquic.clog_config
                 return "Empty";
             }
             UTF8Encoding utf8 = new UTF8Encoding(false, true);
-            utf8.DecoderFallback = new DecoderExceptionFallback();
             StringBuilder AlpnList = new StringBuilder(value.Length);
             uint i = 0;
             while (i < value.Length)

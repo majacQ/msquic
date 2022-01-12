@@ -11,8 +11,8 @@
 #pragma warning(disable:4214)  // nonstandard extension used: zero-sized array in struct/union
 #pragma warning(disable:28931) // Unused Assignment
 
-#include <precomp.h> // from 'core' dir
-#include <msquichelper.h>
+#include "precomp.h" // from 'core' dir
+#include "msquichelper.h"
 
 #include "packet_writer.h"
 
@@ -106,8 +106,9 @@ UdpUnreachCallback(
 
 void RunAttackRandom(CXPLAT_SOCKET* Binding, uint16_t Length, bool ValidQuic)
 {
-    QUIC_ADDR LocalAddress;
-    CxPlatSocketGetLocalAddress(Binding, &LocalAddress);
+    CXPLAT_ROUTE Route;
+    CxPlatSocketGetLocalAddress(Binding, &Route.LocalAddress);
+    Route.RemoteAddress = ServerAddress;
 
     uint64_t ConnectionId = 0;
     CxPlatRandom(sizeof(ConnectionId), &ConnectionId);
@@ -116,7 +117,7 @@ void RunAttackRandom(CXPLAT_SOCKET* Binding, uint16_t Length, bool ValidQuic)
 
         CXPLAT_SEND_DATA* SendData =
             CxPlatSendDataAlloc(
-                Binding, CXPLAT_ECN_NON_ECT, Length);
+                Binding, CXPLAT_ECN_NON_ECT, Length, &Route);
         if (SendData == nullptr) {
             printf("CxPlatSendDataAlloc failed\n");
             return;
@@ -159,8 +160,7 @@ void RunAttackRandom(CXPLAT_SOCKET* Binding, uint16_t Length, bool ValidQuic)
         QUIC_SUCCEEDED(
         CxPlatSocketSend(
             Binding,
-            &LocalAddress,
-            &ServerAddress,
+            &Route,
             SendData,
             (uint16_t)CxPlatProcCurrentNumber())));
     }
@@ -185,8 +185,9 @@ void RunAttackValidInitial(CXPLAT_SOCKET* Binding)
     const uint16_t DatagramLength = QUIC_MIN_INITIAL_LENGTH;
     const uint64_t PacketNumber = 0;
 
-    QUIC_ADDR LocalAddress;
-    CxPlatSocketGetLocalAddress(Binding, &LocalAddress);
+    CXPLAT_ROUTE Route;
+    CxPlatSocketGetLocalAddress(Binding, &Route.LocalAddress);
+    Route.RemoteAddress = ServerAddress;
 
     uint8_t Packet[512] = {0};
     uint16_t PacketLength, HeaderLength;
@@ -220,7 +221,7 @@ void RunAttackValidInitial(CXPLAT_SOCKET* Binding)
 
         CXPLAT_SEND_DATA* SendData =
             CxPlatSendDataAlloc(
-                Binding, CXPLAT_ECN_NON_ECT, DatagramLength);
+                Binding, CXPLAT_ECN_NON_ECT, DatagramLength, &Route);
         VERIFY(SendData);
 
         while (CxPlatTimeDiff64(TimeStart, CxPlatTimeMs64()) < TimeoutMs &&
@@ -290,8 +291,7 @@ void RunAttackValidInitial(CXPLAT_SOCKET* Binding)
         QUIC_SUCCEEDED(
         CxPlatSocketSend(
             Binding,
-            &LocalAddress,
-            &ServerAddress,
+            &Route,
             SendData,
             (uint16_t)CxPlatProcCurrentNumber())));
     }
@@ -300,13 +300,16 @@ void RunAttackValidInitial(CXPLAT_SOCKET* Binding)
 CXPLAT_THREAD_CALLBACK(RunAttackThread, /* Context */)
 {
     CXPLAT_SOCKET* Binding;
+    CXPLAT_UDP_CONFIG UdpConfig = {0};
+    UdpConfig.LocalAddress = nullptr;
+    UdpConfig.RemoteAddress = &ServerAddress;
+    UdpConfig.Flags = 0;
+    UdpConfig.InterfaceIndex = 0;
+    UdpConfig.CallbackContext = nullptr;
     QUIC_STATUS Status =
         CxPlatSocketCreateUdp(
             Datapath,
-            nullptr,
-            &ServerAddress,
-            nullptr,
-            0,
+            &UdpConfig,
             &Binding);
     if (QUIC_FAILED(Status)) {
         printf("CxPlatSocketCreateUdp failed, 0x%x\n", Status);

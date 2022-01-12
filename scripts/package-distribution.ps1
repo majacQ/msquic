@@ -23,8 +23,14 @@ $WindowsBuilds = @()
 $AllBuilds = @()
 
 foreach ($Platform in $Platforms) {
-    $PlatBuilds = Get-ChildItem -Path $Platform
+    $PlatBuilds = Get-ChildItem -Path $Platform.FullName
     foreach ($PlatBuild in $PlatBuilds) {
+        if (!(Test-Path $PlatBuild.FullName -PathType Container)) {
+            continue;
+        }
+        if ($PlatBuild.Name -eq "_manifest") {
+            continue;
+        }
         $AllBuilds += $PlatBuild
         if ($Platform.Name -eq "windows") {
             $WindowsBuilds += $PlatBuild
@@ -34,7 +40,7 @@ foreach ($Platform in $Platforms) {
 
 foreach ($Build in $AllBuilds) {
     $BuildBaseName = $Build.Name
-    $Platform = Split-Path -Path (Split-Path -Path $Build -Parent) -Leaf
+    $Platform = Split-Path -Path (Split-Path -Path $Build.FullName -Parent) -Leaf
 
     if ($Platform -eq "winkernel") {
         continue
@@ -45,7 +51,7 @@ foreach ($Build in $AllBuilds) {
 
     $DistDir = Join-Path $BaseArtifactsDir "dist"
 
-    $TempDir = Join-Path $BaseArtifactsDir "temp" "zip" $Platform
+    $TempDir = Join-Path $BaseArtifactsDir "temp/zip/$Platform"
     $TempDir = Join-Path $TempDir $BuildBaseName
 
     # Initialize directories needed for building.
@@ -59,13 +65,13 @@ foreach ($Build in $AllBuilds) {
 
     New-Item -Path $TempDir -ItemType Directory -Force | Out-Null
 
-    $HeaderDir = Join-Path $RootDir "src" "inc"
+    $HeaderDir = Join-Path $RootDir "src/inc"
 
     # Find Headers
 
     $Headers = @(Join-Path $HeaderDir "msquic.h")
 
-    if ($Platform -eq "windows" -or $Platform -eq "uwp") {
+    if ($Platform -eq "windows" -or $Platform -eq "uwp" -or $Platform -eq "gamecore_console") {
         $Headers += Join-Path $HeaderDir  "msquic_winuser.h"
     } else {
         $Headers += Join-Path $HeaderDir  "msquic_posix.h"
@@ -76,7 +82,7 @@ foreach ($Build in $AllBuilds) {
 
     $Binaries = @()
 
-    if ($Platform -eq "windows" -or $Platform -eq "uwp") {
+    if ($Platform -eq "windows" -or $Platform -eq "uwp" -or $Platform -eq "gamecore_console") {
         $Binaries += Join-Path $ArtifactsDir "msquic.dll"
         $Binaries += Join-Path $ArtifactsDir "msquic.pdb"
     } elseif ($Platform -eq "linux") {
@@ -92,7 +98,7 @@ foreach ($Build in $AllBuilds) {
 
     $Libraries = @()
 
-    if ($Platform -eq "windows" -or $Platform -eq "uwp") {
+    if ($Platform -eq "windows" -or $Platform -eq "uwp" -or $Platform -eq "gamecore_console") {
         $Libraries += Join-Path $ArtifactsDir "msquic.lib"
     }
 
@@ -127,10 +133,19 @@ foreach ($Build in $AllBuilds) {
 
     # Copy License
     Copy-Item -Path (Join-Path $RootDir "LICENSE") -Destination $TempDir
-    if (!$BuildBaseName.Contains("Schannel", [StringComparison]::InvariantCultureIgnoreCase)) {
+    if (!($BuildBaseName -like "*schannel*")) {
         # Only need license, no 3rd party code
         Copy-Item -Path (Join-Path $RootDir "THIRD-PARTY-NOTICES") -Destination $TempDir
     }
     # Package zip archive
     Compress-Archive -Path "$TempDir/*" -DestinationPath (Join-Path $DistDir "msquic_$($Platform)_$BuildBaseName.zip") -Force
+
+    # For now, package only x64 Release binaries
+    if ($Platform -eq "linux" -and $BuildBaseName -like "*x64_Release*") {
+        Write-Output "Packaging $Build"
+        $OldLoc = Get-Location
+        Set-Location $RootDir
+        & $RootDir/scripts/make-packages.sh --output $DistDir
+        Set-Location $OldLoc
+    }
 }

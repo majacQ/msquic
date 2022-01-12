@@ -58,24 +58,22 @@ typedef struct _SYSTEM_BASIC_INFORMATION {
 
 uint64_t CxPlatPerfFreq;
 uint64_t CxPlatTotalMemory;
-CX_PLATFORM CxPlatform = { NULL, NULL };
+CX_PLATFORM CxPlatform = { NULL };
 QUIC_TRACE_RUNDOWN_CALLBACK* QuicTraceRundownCallback;
 
-INITCODE
+PAGEDX
 _IRQL_requires_max_(PASSIVE_LEVEL)
 void
 CxPlatSystemLoad(
-    _In_ PDRIVER_OBJECT DriverObject,
-    _In_ PUNICODE_STRING RegistryPath
+    void
     )
 {
-    UNREFERENCED_PARAMETER(RegistryPath);
+    PAGED_CODE();
 
 #ifdef QUIC_EVENTS_MANIFEST_ETW
     EventRegisterMicrosoft_Quic();
 #endif
 
-    CxPlatform.DriverObject = DriverObject;
     (VOID)KeQueryPerformanceCounter((LARGE_INTEGER*)&CxPlatPerfFreq);
     CxPlatform.RngAlgorithm = NULL;
 
@@ -146,13 +144,13 @@ CxPlatInitialize(
         goto Error;
     }
 
-    Status = CxPlatTlsLibraryInitialize();
+    Status = CxPlatCryptInitialize();
     if (QUIC_FAILED(Status)) {
         QuicTraceEvent(
             LibraryErrorStatus,
             "[ lib] ERROR, %u, %s.",
             Status,
-            "CxPlatTlsLibraryInitialize");
+            "CxPlatCryptInitialize");
         goto Error;
     }
 
@@ -188,7 +186,7 @@ CxPlatUninitialize(
     )
 {
     PAGED_CODE();
-    CxPlatTlsLibraryUninitialize();
+    CxPlatCryptUninitialize();
     BCryptCloseAlgorithmProvider(CxPlatform.RngAlgorithm, 0);
     CxPlatform.RngAlgorithm = NULL;
     QuicTraceLogInfo(

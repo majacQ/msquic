@@ -1,4 +1,4 @@
-MsQuic
+[![CLOG](https://github.com/microsoft/msquic/actions/workflows/check-clog.yml/badge.svg)](https://github.com/microsoft/msquic/actions/workflows/check-clog.yml)MsQuic
 ======
 
 MsQuic is a Microsoft implementation of the [IETF QUIC](https://datatracker.ietf.org/wg/quic/about/)
